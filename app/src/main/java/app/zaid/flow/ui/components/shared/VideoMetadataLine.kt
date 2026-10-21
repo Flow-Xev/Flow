@@ -1,0 +1,66 @@
+package app.zaid.flow.ui.components.shared
+
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.res.stringResource
+import app.zaid.flow.R
+import app.zaid.flow.data.model.Video
+import app.zaid.flow.utils.DateContext
+import app.zaid.flow.utils.DateDisplayMode
+import app.zaid.flow.utils.formatPremiereDate
+import app.zaid.flow.utils.formatScheduledStart
+import app.zaid.flow.utils.formatViewCount
+import app.zaid.flow.utils.upcomingReleaseMs
+
+@Composable
+fun videoMetadataLine(
+    video: Video,
+    isUpcoming: Boolean,
+    channelName: String = video.channelName,
+    includeChannel: Boolean = false,
+): String {
+    val dateSettings = rememberDateDisplaySettings()
+    if (isUpcoming) {
+        val mode = dateSettings.resolve(DateContext.LISTS)
+        val releaseMs = remember(video.timestamp, video.uploadDate) { upcomingReleaseMs(video.timestamp, video.uploadDate) }
+        val scheduled =
+            remember(releaseMs, video.uploadDate, mode) {
+                releaseMs?.let { formatScheduledStart(it, mode) } ?: formatPremiereDate(video.uploadDate)
+            }
+        // "Scheduled for in 2 days" does not read, so a relative span for a stream says "Live in".
+        val prefix =
+            when {
+                !video.isScheduledLive -> R.string.premiere_date_prefix
+                releaseMs == null || mode == DateDisplayMode.EXACT -> R.string.scheduled_for_prefix
+                else -> R.string.live_in_prefix
+            }
+        return scheduled
+            ?.let { stringResource(prefix, it) }
+            ?: video.uploadDate.takeIf(String::isNotBlank)
+            ?: stringResource(R.string.premiere_soon)
+    }
+
+    val uploadedAt =
+        remember(video.uploadDate, video.timestamp, video.timestampIsExact, dateSettings) {
+            dateSettings.format(video.uploadDate, DateContext.LISTS, video.timestamp, video.timestampIsExact)
+        }
+
+    // A zero count means "not reported" — members-only uploads carry no view count at all — so the
+    // row shows the date alone rather than a literal "0 views".
+    if (video.viewCount <= 0L) {
+        return when {
+            !includeChannel -> uploadedAt
+            uploadedAt.isBlank() -> channelName
+            else -> stringResource(R.string.video_metadata_short_template, channelName, uploadedAt)
+        }
+    }
+
+    // A live stream has viewers but no date, and a row must not end in a dangling separator.
+    val views = stringResource(R.string.views_template, formatViewCount(video.viewCount))
+    return when {
+        uploadedAt.isBlank() && includeChannel -> stringResource(R.string.video_metadata_short_template, channelName, views)
+        uploadedAt.isBlank() -> views
+        includeChannel -> stringResource(R.string.video_metadata_template, channelName, views, uploadedAt)
+        else -> stringResource(R.string.video_metadata_short_template, views, uploadedAt)
+    }
+}

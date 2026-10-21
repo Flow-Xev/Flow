@@ -1,0 +1,496 @@
+package app.zaid.flow.ui.screens.channel
+
+import android.content.Context
+import android.util.Log
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import app.zaid.flow.R
+import app.zaid.flow.data.local.ChannelSubscription
+import app.zaid.flow.data.local.PlayerPreferences
+import app.zaid.flow.data.local.SubscriptionRepository
+import app.zaid.flow.data.local.dao.SubscriptionGroupDao
+import app.zaid.flow.data.local.entity.SubscriptionGroupEntity
+import app.zaid.flow.data.model.Comment
+import app.zaid.flow.data.model.SubscriptionGroup
+import app.zaid.flow.data.model.Video
+import app.zaid.flow.data.model.distinctByNonBlankKey
+import app.zaid.flow.data.model.toUiModel
+import app.zaid.flow.data.notes.NoteKind
+import app.zaid.flow.data.notes.NoteSubject
+import app.zaid.flow.data.notes.NotesRepository
+import app.zaid.flow.innertube.YouTube
+import app.zaid.flow.innertube.pages.channel.ChannelTabKind
+import app.zaid.flow.innertube.pages.renderer.CommunityPost
+import app.zaid.flow.innertube.pages.renderer.FeedItemOwner
+import app.zaid.flow.ui.youtubeChannelBrowseId
+import app.zaid.flow.ui.youtubeChannelUrl
+import app.zaid.flow.utils.PerformanceDispatcher
+import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import javax.inject.Inject
+
+@HiltViewModel
+class ChannelViewModel
+    @Inject
+    constructor(
+        @ApplicationContext private val appContext: Context,
+        private val subscriptionRepository: SubscriptionRepository,
+        private val subscriptionGroupDao: SubscriptionGroupDao,
+        private val notesRepository: NotesRepository,
+        private val playerPreferences: PlayerPreferences,
+    ) : ViewModel() {
+        val subscriptionGroups: StateFlow<List<SubscriptionGroup>> =
+            subscriptionGroupDao
+                .getAllGroups()
+                .map { entities -> entities.map { it.toUiModel() } }
+                .stateIn(viewModelScope, SharingStarted.WhileSubscribed(GROUPS_SUBSCRIPTION_TIMEOUT_MS), emptyList())
+
+        fun setChannelInGroup(
+            groupName: String,
+            channelId: String,
+            inGroup: Boolean,
+        ) {
+            viewModelScope.launch(PerformanceDispatcher.diskIO) {
+                val group = subscriptionGroupDao.getAllGroupsOnce().firstOrNull { it.name == groupName } ?: return@launch
+                val members = group.toUiModel().channelIds.toMutableSet()
+                if (inGroup) members.add(channelId) else members.remove(channelId)
+                subscriptionGroupDao.updateGroup(group.copy(channelIds = members.joinToString(",")))
+            }
+        }
+
+        fun createGroupWithChannel(
+            groupName: String,
+            channelId: String,
+        ) {
+            viewModelScope.launch(PerformanceDispatcher.diskIO) {
+                val name = groupName.trim()
+                if (name.isEmpty() || subscriptionGroupDao.exists(name)) return@launch
+                val order = subscriptionGroupDao.getAllGroupsOnce().size
+                subscriptionGroupDao.insertGroup(
+                    SubscriptionGroupEntity(name = name, channelIds = channelId, sortOrder = order),
+                )
+            }
+        }
+
+        /** Which channels the user follows, so a featured-channel row can show its real state. */
+        val subscribedChannelIds: StateFlow<Set<String>> =
+            subscriptionRepository
+                .getAllSubscriptions()
+                .map { subscriptions -> subscriptions.map { it.channelId }.toSet() }
+                .stateIn(viewModelScope, SharingStarted.WhileSubscribed(GROUPS_SUBSCRIPTION_TIMEOUT_MS), emptySet())
+
+        fun setChannelSubscription(
+            channel: app.zaid.flow.data.model.Channel,
+            subscribed: Boolean,
+        ) {
+            viewModelScope.launch(PerformanceDispatcher.diskIO) {
+                if (subscribed) {
+                    subscriptionRepository.subscribe(
+                        ChannelSubscription(
+                            channelId = channel.id,
+                            channelName = channel.name,
+                            channelThumbnail = channel.thumbnailUrl,
+                            subscribedAt = System.currentTimeMillis(),
+                        ),
+                    )
+                } else {
+                    subscriptionRepository.unsubscribe(channel.id)
+                }
+            }
+        }
+
+        val notesEnabled: StateFlow<Boolean> =
+            playerPreferences.effectiveChannelNotesEnabled
+                .stateIn(viewModelScope, SharingStarted.WhileSubscribed(GROUPS_SUBSCRIPTION_TIMEOUT_MS), false)
+
+        val showShortsTab: StateFlow<Boolean> =
+            playerPreferences.effectiveChannelShortsTabEnabled
+                .stateIn(viewModelScope, SharingStarted.WhileSubscribed(GROUPS_SUBSCRIPTION_TIMEOUT_MS), true)
+
+        private val _channelNote = MutableStateFlow<String?>(null)
+        val channelNote: StateFlow<String?> = _channelNote.asStateFlow()
+
+        private var noteJob: Job? = null
+
+        private fun observeNote(channelId: String) {
+            noteJob?.cancel()
+            noteJob =
+                viewModelScope.launch(PerformanceDispatcher.diskIO) {
+                    notesRepository.observe(NoteKind.Channel, channelId).collect { note ->
+                        _channelNote.value = note?.text
+                    }
+                }
+        }
+
+        fun saveChannelNote(text: String) {
+            val channelId = _uiState.value.channelId ?: return
+            val subject =
+                _uiState.value.header
+                    ?.takeIf { it.title.isNotBlank() }
+                    ?.let { header ->
+                        NoteSubject(
+                            title = header.title,
+                            channelId = header.id,
+                            thumbnailUrl = header.avatarUrl,
+                            channelAvatarUrl = header.avatarUrl,
+                            channelHandle = header.handle.orEmpty(),
+                            subscriberCountText = header.subscriberCountText.orEmpty(),
+                        )
+                    }
+            viewModelScope.launch(PerformanceDispatcher.diskIO) {
+                notesRepository.save(NoteKind.Channel, channelId, text, subject)
+            }
+        }
+
+        private val _uiState = MutableStateFlow(ChannelUiState())
+        val uiState: StateFlow<ChannelUiState> = _uiState.asStateFlow()
+        private val communityController = ChannelCommunityController(viewModelScope)
+        private var requestedChannelUrl: String? = null
+        internal val communityUiState: StateFlow<ChannelCommunityUiState> = communityController.state
+
+        private val storeState = MutableStateFlow(ChannelStoreUiState())
+        internal val store: StateFlow<ChannelStoreUiState> = storeState.asStateFlow()
+
+        private var storeJob: Job? = null
+
+        /**
+         * Fetched on the first tap of the bag and kept for the channel; a failed load can be retried.
+         * Retries once on failure and gives up after [STORE_TIMEOUT_MS], so the sheet never spins for
+         * ever. A result for a channel the user has since left is discarded.
+         */
+        fun loadStore() {
+            val state = _uiState.value
+            val channelId = state.channelId ?: return
+            if (storeState.value.isLoading || storeState.value.loaded) return
+            storeState.update { it.copy(isLoading = true, error = false) }
+            val params = state.tabParams(ChannelTabKind.Store).orEmpty()
+            storeJob?.cancel()
+            storeJob =
+                viewModelScope.launch(PerformanceDispatcher.networkIO) {
+                    var result: Result<List<app.zaid.flow.innertube.pages.channel.ChannelProduct>>? = null
+                    repeat(STORE_ATTEMPTS) { attempt ->
+                        if (result?.isSuccess == true) return@repeat
+                        result =
+                            runCatching {
+                                kotlinx.coroutines.withTimeout(STORE_TIMEOUT_MS) {
+                                    YouTube.channelStore(channelId, params).getOrThrow()
+                                }
+                            }
+                        if (result?.isFailure == true && attempt < STORE_ATTEMPTS - 1) kotlinx.coroutines.delay(STORE_RETRY_DELAY_MS)
+                    }
+                    if (_uiState.value.channelId != channelId) return@launch
+                    result!!.fold(
+                        onSuccess = { products -> storeState.value = ChannelStoreUiState(products = products, loaded = true) },
+                        onFailure = { error ->
+                            if (error is kotlinx.coroutines.CancellationException &&
+                                error !is kotlinx.coroutines.TimeoutCancellationException
+                            ) {
+                                throw error
+                            }
+                            Log.e(TAG, "Failed to load store", error)
+                            storeState.value = ChannelStoreUiState(error = true)
+                        },
+                    )
+                }
+        }
+
+        private val tabController = ChannelTabController(viewModelScope)
+        internal val tabStates: StateFlow<Map<ChannelTabKind, ChannelTabState>> = tabController.states
+
+        private fun channelOwner(): FeedItemOwner {
+            val state = _uiState.value
+            return FeedItemOwner(
+                id = state.channelId.orEmpty(),
+                name = state.header?.title.orEmpty(),
+                avatarUrl = state.header?.avatarUrl.orEmpty(),
+            )
+        }
+
+        fun selectTabFilter(
+            kind: ChannelTabKind,
+            groupIndex: Int,
+            optionIndex: Int,
+        ) = tabController.selectFilter(kind, _uiState.value.tabParams(kind), groupIndex, optionIndex)
+
+        var listScrollIndex: Int = 0
+            private set
+        var listScrollOffset: Int = 0
+            private set
+
+        fun saveScrollPosition(
+            index: Int,
+            offset: Int,
+        ) {
+            listScrollIndex = index
+            listScrollOffset = offset
+        }
+
+        companion object {
+            private const val TAG = "ChannelViewModel"
+            private const val GROUPS_SUBSCRIPTION_TIMEOUT_MS = 5_000L
+            private const val STORE_TIMEOUT_MS = 15_000L
+            private const val STORE_ATTEMPTS = 2
+            private const val STORE_RETRY_DELAY_MS = 600L
+        }
+
+        /**
+         *  PERFORMANCE OPTIMIZED: Load channel with timeout protection
+         */
+        fun loadChannel(channelUrl: String) {
+            if (!shouldLoadChannel(_uiState.value, requestedChannelUrl, channelUrl)) return
+            requestedChannelUrl = channelUrl
+            val directId = youtubeChannelBrowseId(channelUrl)
+            val vanityUrl = youtubeChannelUrl(channelUrl)
+            if (directId == null && vanityUrl == null) {
+                _uiState.update { it.copy(error = appContext.getString(R.string.error_invalid_channel_url), isLoading = false) }
+                return
+            }
+
+            _uiState.update { it.copy(isLoading = true, error = null) }
+            viewModelScope.launch(PerformanceDispatcher.networkIO) {
+                val browseId =
+                    directId ?: YouTube.resolveChannelId(checkNotNull(vanityUrl)).getOrElse { error ->
+                        Log.e(TAG, "Failed to resolve $vanityUrl", error)
+                        _uiState.update { it.copy(error = appContext.getString(R.string.error_channel_link_not_found), isLoading = false) }
+                        return@launch
+                    }
+
+                YouTube.channel(browseId).fold(
+                    onSuccess = { page ->
+                        val header = page.header
+                        val channelId = header.id.ifBlank { browseId }
+                        _uiState.update {
+                            it.copy(
+                                channelId = channelId,
+                                header = header,
+                                tabs = page.tabs,
+                                isLoading = false,
+                            )
+                        }
+                        storeJob?.cancel()
+                        storeState.value = ChannelStoreUiState()
+                        communityController.reset(channelId, header.title, header.avatarUrl)
+                        loadSubscriptionState(channelId)
+                        observeNote(channelId)
+                        onTabsResolved()
+                    },
+                    onFailure = { error ->
+                        Log.e(TAG, "Failed to load channel", error)
+                        _uiState.update {
+                            it.copy(
+                                error = error.message ?: appContext.getString(R.string.error_failed_to_load_channel),
+                                isLoading = false,
+                            )
+                        }
+                    },
+                )
+            }
+        }
+
+        private fun onTabsResolved() {
+            val state = _uiState.value
+            val channelId = state.channelId ?: return
+            tabController.reset(channelId, channelOwner())
+            val first = state.selectedTab ?: state.tabs.firstOrNull()?.kind ?: return
+            _uiState.update { it.copy(selectedTab = first) }
+            ensureTabLoaded(first)
+        }
+
+        private fun ensureTabLoaded(kind: ChannelTabKind) {
+            if (kind == ChannelTabKind.Posts) {
+                communityController.ensurePostsLoaded()
+                return
+            }
+            if (kind == ChannelTabKind.Shorts) {
+                // Read at load time, not once per channel, so turning the tab on while a channel is open still loads it.
+                viewModelScope.launch {
+                    if (playerPreferences.effectiveChannelShortsTabEnabled.first()) {
+                        tabController.ensureLoaded(kind, _uiState.value.tabParams(kind))
+                    }
+                }
+                return
+            }
+            tabController.ensureLoaded(kind, _uiState.value.tabParams(kind))
+        }
+
+        private fun loadSubscriptionState(channelId: String) {
+            viewModelScope.launch(PerformanceDispatcher.diskIO) {
+                subscriptionRepository.getSubscription(channelId).collect { subscription ->
+                    _uiState.update {
+                        it.copy(
+                            isSubscribed = subscription != null,
+                            isNotificationsEnabled = subscription?.isNotificationEnabled ?: false,
+                        )
+                    }
+                }
+            }
+        }
+
+        fun toggleSubscription() {
+            viewModelScope.launch(PerformanceDispatcher.diskIO) {
+                val state = _uiState.value
+                val channelId = state.channelId ?: return@launch
+                val header = state.header ?: return@launch
+                val channelName = header.title
+                val channelThumbnail = header.avatarUrl
+
+                if (state.isSubscribed) {
+                    // Unsubscribe
+                    subscriptionRepository.unsubscribe(channelId)
+                } else {
+                    // Subscribe
+                    val subscription =
+                        ChannelSubscription(
+                            channelId = channelId,
+                            channelName = channelName,
+                            channelThumbnail = channelThumbnail,
+                            subscribedAt = System.currentTimeMillis(),
+                        )
+                    subscriptionRepository.subscribe(subscription)
+                }
+            }
+        }
+
+        fun unsubscribe() {
+            viewModelScope.launch(PerformanceDispatcher.diskIO) {
+                val state = _uiState.value
+                val channelId = state.channelId ?: return@launch
+                subscriptionRepository.unsubscribe(channelId)
+            }
+        }
+
+        /** Writes a comment on the community post whose comments are open, as the signed-in account. */
+        fun postCommunityComment(
+            text: String,
+            onDone: (Result<Unit>) -> Unit,
+        ) {
+            viewModelScope.launch {
+                onDone(
+                    app.zaid.flow.account.AccountActions
+                        .postComment(app.zaid.flow.innertube.YouTube.COMMUNITY_COMMENT_KEY, text),
+                )
+            }
+        }
+
+        fun setNotificationState(enabled: Boolean) {
+            viewModelScope.launch(PerformanceDispatcher.diskIO) {
+                val state = _uiState.value
+                val channelId = state.channelId ?: return@launch
+                subscriptionRepository.updateNotificationState(channelId, enabled)
+            }
+        }
+
+        fun selectTab(kind: ChannelTabKind) {
+            _uiState.update { it.copy(selectedTab = kind) }
+            ensureTabLoaded(kind)
+        }
+
+        fun openCommunityPostComments(post: CommunityPost) = communityController.openComments(post)
+
+        fun closeCommunityPostComments() = communityController.closeComments()
+
+        fun retryCommunityPosts() = communityController.retryPosts()
+
+        fun loadMoreCommunityPosts() = communityController.loadMorePosts()
+
+        fun loadMoreCommunityPostComments() = communityController.loadMoreComments()
+
+        fun loadCommunityCommentReplies(comment: Comment) = communityController.loadReplies(comment, append = false)
+
+        fun loadMoreCommunityCommentReplies(comment: Comment) = communityController.loadReplies(comment, append = true)
+
+        // ── Channel search ────────────────────────────────────────────────────────
+
+        fun setSearchActive(active: Boolean) {
+            _uiState.update {
+                it.copy(
+                    searchActive = active,
+                    searchQuery = if (!active) "" else it.searchQuery,
+                    searchResults = if (!active) emptyList() else it.searchResults,
+                    searchErrorLog = null,
+                )
+            }
+        }
+
+        fun searchInChannel(query: String) {
+            val channelId = _uiState.value.channelId ?: return
+            val header = _uiState.value.header ?: return
+            val trimmed = query.trim()
+
+            _uiState.update {
+                it.copy(
+                    searchQuery = query,
+                    searchErrorLog = null,
+                )
+            }
+
+            if (trimmed.isBlank()) {
+                _uiState.update { it.copy(searchResults = emptyList(), isSearching = false) }
+                return
+            }
+
+            viewModelScope.launch(PerformanceDispatcher.networkIO) {
+                _uiState.update { it.copy(isSearching = true) }
+                try {
+                    val result =
+                        YouTube.channelSearch(
+                            channelId = channelId,
+                            channelName = header.title,
+                            channelThumbnailUrl = header.avatarUrl,
+                            query = trimmed,
+                        )
+                    result.fold(
+                        onSuccess = { page ->
+                            _uiState.update {
+                                it.copy(
+                                    searchResults = page.videos.distinctByNonBlankKey(Video::id),
+                                    searchContinuation = page.continuation,
+                                    isSearching = false,
+                                    searchErrorLog = null,
+                                )
+                            }
+                        },
+                        onFailure = { e ->
+                            Log.e(TAG, "Channel search failed", e)
+                            _uiState.update {
+                                it.copy(
+                                    isSearching = false,
+                                    searchErrorLog =
+                                        buildChannelRequestErrorLog(
+                                            operation = "channel_search",
+                                            channelId = channelId,
+                                            query = trimmed,
+                                            error = e,
+                                        ),
+                                )
+                            }
+                        },
+                    )
+                } catch (e: Exception) {
+                    Log.e(TAG, "Channel search error", e)
+                    _uiState.update {
+                        it.copy(
+                            isSearching = false,
+                            searchErrorLog =
+                                buildChannelRequestErrorLog(
+                                    operation = "channel_search",
+                                    channelId = channelId,
+                                    query = trimmed,
+                                    error = e,
+                                ),
+                        )
+                    }
+                }
+            }
+        }
+    }
