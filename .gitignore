@@ -1,0 +1,51 @@
+
+*.iml
+.gradle
+.idea
+build/
+/captures
+.externalNativeBuild
+.cxx
+takeout
+/notes
+/legacy
+algo.md
+newpipe-dev
+# Signing keystore - NEVER COMMIT THIS FILE!
+release.keystore
+generate_key.ps1
+generate_key.bat
+flow-website
+svglogo
+metro*
+release.ps1
+release.bat
+releasenote.ps1
+build_result.md
+LibreTube-master
+
+# Secrets and Local configuration
+local.properties
+*.keystore
+*.jks
+key.properties
+pipepipe
+graphify-out/
+.claude/
+claude.md
+Flow-desktop/
+
+# Kotlin compiler session/daemon state
+.kotlin/
+
+# Local engine diagnostics (real exported brains - personal data, never commit)
+/diagnostics/
+/app/diagnostics/
+
+# Captured InnerTube explore payloads: megabytes of response, regenerated locally by
+# notes/innertube-video-responses/trim_explore_fixtures.py rather than tracked.
+/app/src/test/resources/explore/
+/app/src/test/resources/shorts/
+
+# macOS Finder metadata
+.DS_Store

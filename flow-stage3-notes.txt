@@ -1,0 +1,8 @@
+Stage 3 (Games): only ui/screens/home/Playables.kt changed (stages 1+2 files all included).
+- "Recently played" pill on the last game you opened (Home row, All Games, Library > Games); it also sorts first.
+- Games data (plays, likes, best score, comments, downloads list, recent) is now stored per Google account; legacy data moves to the first signed-in account once.
+- Game WebView now uses the app's Google session cookies, so the game itself saves progress/score to your account.
+
+Game WebView upgrade (Playables.kt): fullscreen mode, keep-screen-on, pause when app/sheet/dialog is up, loading cover + progress,
+error/offline screen with Retry, exit confirmation, in-bar like count + download, rich details sheet (share, restart, comments, play time),
+hardened WebView (no file access, no pop-ups, navigation limited to Google/YouTube hosts, camera/mic denied), crash recovery.

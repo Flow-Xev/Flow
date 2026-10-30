@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12+ splash: the logo pops in with a small overshoot. Older versions use the static drawable. -->
+<animated-vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/splash_icon_expressive_cookie_anim_base">
+    <target android:name="badge" android:animation="@animator/splash_badge_scale_x" />
+    <target android:name="badge" android:animation="@animator/splash_badge_scale_y" />
+</animated-vector>

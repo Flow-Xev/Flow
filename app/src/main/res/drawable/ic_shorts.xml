@@ -1,0 +1,22 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="144"
+    android:viewportHeight="144">
+
+    <!-- The glyph's box (x 0..98.94, y 0..122.88) is centred on the 144 viewport (72, 72); the 8-unit stroke is
+         symmetric around it, so the visible mark is centred too and nothing is clipped. -->
+    <group
+        android:translateX="22.53"
+        android:translateY="10.56">
+        
+        <path
+            android:fillColor="#00000000"
+            android:strokeColor="#FF0000"
+            android:strokeWidth="8"
+            android:strokeLineJoin="round"
+            android:strokeLineCap="round"
+            android:fillType="evenOdd"
+            android:pathData="M63.49 2.71c11.59-6.04 25.94-1.64 32.04 9.83 6.1 11.47 1.65 25.66-9.94 31.7l-9.53 5.01c8.21.3 16.04 4.81 20.14 12.52 6.1 11.47 1.66 25.66-9.94 31.7l-50.82 26.7c-11.59 6.04-25.94 1.64-32.04-9.83-6.1-11.47-1.65-25.66 9.94-31.7l9.53-5.01c-8.21-.3-16.04-4.81-20.14-12.52-6.1-11.47-1.65-25.66 9.94-31.7l50.82-26.7zM36.06 42.53l30.76 18.99-30.76 18.9V42.53z" />
+    </group>
+</vector>
