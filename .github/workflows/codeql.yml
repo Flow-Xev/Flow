@@ -56,7 +56,7 @@ jobs:
       # the compiler as it runs, so a cache hit that makes the compile tasks
       # UP-TO-DATE would produce an empty database and fail the analysis.
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v6
+        uses: gradle/actions/setup-gradle@v5
         with:
           cache-disabled: true
 
