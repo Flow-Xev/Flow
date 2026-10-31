@@ -1,0 +1,223 @@
+package app.zaid.flow.ui.screens.player.dialogs
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.SwapVert
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import app.zaid.flow.R
+import app.zaid.flow.data.local.PlayerPreferences
+import app.zaid.flow.data.model.SponsorBlockCategories
+import app.zaid.flow.data.repository.SponsorBlockRepository
+import app.zaid.flow.ui.components.shared.FlowDialogDefaults
+import app.zaid.flow.utils.formatDurationMillis
+import app.zaid.flow.utils.parseTimestampMs
+import app.zaid.flow.utils.sponsorCategoryLabelRes
+import kotlinx.coroutines.launch
+
+/**
+ * Dialog for submitting a new SponsorBlock segment.
+ * End time is pre-filled with the current player position; [onSubmitted] runs once the server accepts it.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun SbSubmitSegmentDialog(
+    videoId: String,
+    currentPositionMs: Long,
+    onDismiss: () -> Unit,
+    onSubmitted: () -> Unit,
+    repository: SponsorBlockRepository = remember { SponsorBlockRepository() },
+) {
+    val context = LocalContext.current
+    val playerPreferences = remember { PlayerPreferences(context) }
+    val coroutineScope = rememberCoroutineScope()
+
+    var startTime by remember { mutableStateOf("") }
+    var endTime by remember { mutableStateOf(formatDurationMillis(currentPositionMs, padMinutes = true)) }
+    var selectedCategoryIndex by remember { mutableIntStateOf(0) }
+    var categoryExpanded by remember { mutableStateOf(false) }
+    var isSubmitting by remember { mutableStateOf(false) }
+    var submitSucceeded by remember { mutableStateOf<Boolean?>(null) }
+    var startError by remember { mutableStateOf(false) }
+    var endError by remember { mutableStateOf(false) }
+
+    BasicAlertDialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = AlertDialogDefaults.shape,
+            color = AlertDialogDefaults.containerColor,
+            tonalElevation = AlertDialogDefaults.TonalElevation,
+        ) {
+            Column(
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(
+                            start = FlowDialogDefaults.ContentPadding,
+                            top = FlowDialogDefaults.ContentPadding,
+                            end = FlowDialogDefaults.ContentPadding,
+                            bottom = FlowDialogDefaults.BottomPadding,
+                        ),
+                verticalArrangement = Arrangement.spacedBy(FlowDialogDefaults.ActionsSpacing),
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    // Title
+                    Text(
+                        text = stringResource(R.string.sb_submit_dialog_title),
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                    )
+
+                    // Time row
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        OutlinedTextField(
+                            value = startTime,
+                            onValueChange = {
+                                startTime = it
+                                startError = false
+                            },
+                            label = { Text(stringResource(R.string.sb_submit_start_time)) },
+                            isError = startError,
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                        )
+                        IconButton(onClick = {
+                            val tmp = startTime
+                            startTime = endTime
+                            endTime = tmp
+                        }) {
+                            Icon(
+                                imageVector = Icons.Outlined.SwapVert,
+                                contentDescription = stringResource(R.string.sb_submit_swap),
+                            )
+                        }
+                        OutlinedTextField(
+                            value = endTime,
+                            onValueChange = {
+                                endTime = it
+                                endError = false
+                            },
+                            label = { Text(stringResource(R.string.sb_submit_end_time)) },
+                            isError = endError,
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+
+                    // Category dropdown
+                    ExposedDropdownMenuBox(
+                        expanded = categoryExpanded,
+                        onExpandedChange = { categoryExpanded = it },
+                    ) {
+                        OutlinedTextField(
+                            value = submitCategoryLabel(SponsorBlockCategories.submittable[selectedCategoryIndex]),
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text(stringResource(R.string.sb_submit_category)) },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = categoryExpanded) },
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
+                        )
+                        ExposedDropdownMenu(
+                            expanded = categoryExpanded,
+                            onDismissRequest = { categoryExpanded = false },
+                        ) {
+                            SponsorBlockCategories.submittable.forEachIndexed { idx, category ->
+                                DropdownMenuItem(
+                                    text = { Text(submitCategoryLabel(category), style = MaterialTheme.typography.bodyLarge) },
+                                    onClick = {
+                                        selectedCategoryIndex = idx
+                                        categoryExpanded = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+
+                    submitSucceeded?.let { succeeded ->
+                        Text(
+                            text = stringResource(if (succeeded) R.string.sb_submit_success else R.string.sb_submit_error),
+                            style = MaterialTheme.typography.bodySmall,
+                            color =
+                                if (succeeded) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.error
+                                },
+                        )
+                    }
+                }
+                // Buttons
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(onClick = onDismiss) {
+                        Text(stringResource(R.string.cancel))
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(
+                        onClick = {
+                            val start = parseTimestampMs(startTime)?.let { it / 1000f }
+                            val end = parseTimestampMs(endTime)?.let { it / 1000f }
+                            if (start == null) {
+                                startError = true
+                                return@Button
+                            }
+                            if (end == null || end <= start) {
+                                endError = true
+                                return@Button
+                            }
+                            isSubmitting = true
+                            submitSucceeded = null
+                            coroutineScope.launch {
+                                val userId = playerPreferences.getOrCreateSbUserId()
+                                val category = SponsorBlockCategories.submittable[selectedCategoryIndex]
+                                val success =
+                                    repository.submitSegment(
+                                        videoId = videoId,
+                                        startTime = start,
+                                        endTime = end,
+                                        category = category,
+                                        userId = userId,
+                                    )
+                                isSubmitting = false
+                                submitSucceeded = success
+                                if (success) {
+                                    onSubmitted()
+                                    onDismiss()
+                                }
+                            }
+                        },
+                        enabled = !isSubmitting,
+                    ) {
+                        if (isSubmitting) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onPrimary,
+                            )
+                        } else {
+                            Text(stringResource(R.string.sb_submit_create))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun submitCategoryLabel(category: String): String = sponsorCategoryLabelRes(category)?.let { stringResource(it) } ?: category

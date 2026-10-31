@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12+ splash for Flow Play and Flow Play Dark: the plate settles in, then the triangle
+     glides in from the left into its place. Older versions show the static art. -->
+<animated-vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/splash_icon_flow_play_anim_base">
+    <target android:name="badge" android:animation="@animator/splash_play_plate_scale_x" />
+    <target android:name="badge" android:animation="@animator/splash_play_plate_scale_y" />
+    <target android:name="arrow" android:animation="@animator/splash_play_arrow_slide" />
+    <target android:name="arrow_shape" android:animation="@animator/splash_play_arrow_fade" />
+</animated-vector>

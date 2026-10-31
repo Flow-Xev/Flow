@@ -1,0 +1,45 @@
+package app.zaid.flow.ui.screens.sync
+
+import androidx.lifecycle.ViewModel
+import app.zaid.flow.sync.SyncManager
+import app.zaid.flow.sync.SyncState
+import app.zaid.flow.sync.protocol.SyncRole
+import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.StateFlow
+import javax.inject.Inject
+
+/** Thin ViewModel over the singleton [SyncManager] (which survives config changes). */
+@HiltViewModel
+class SyncViewModel
+    @Inject
+    constructor(
+        private val manager: SyncManager,
+    ) : ViewModel() {
+        val state: StateFlow<SyncState> = manager.state
+
+        fun host(
+            role: SyncRole,
+            collections: List<String>,
+        ) = manager.host(role, collections)
+
+        fun hostForTv(
+            role: SyncRole,
+            collections: List<String>,
+        ) = manager.hostForTv(role, collections)
+
+        fun join(
+            role: SyncRole,
+            qrText: String,
+            collections: List<String>,
+        ) = manager.join(role, qrText, collections)
+
+        fun extendPairingForManualShare(): String? = manager.extendPairingForManualShare()
+
+        fun confirmSas(matches: Boolean) = manager.confirmSas(matches)
+
+        fun confirmConsent(accepted: Boolean) = manager.confirmConsent(accepted)
+
+        fun cancel() = manager.cancel()
+
+        fun reset() = manager.reset()
+    }

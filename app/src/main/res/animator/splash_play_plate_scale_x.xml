@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<objectAnimator xmlns:android="http://schemas.android.com/apk/res/android"
+    android:duration="450"
+    android:interpolator="@interpolator/splash_emphasized_decelerate"
+    android:propertyName="scaleX"
+    android:valueFrom="0.8"
+    android:valueTo="1"
+    android:valueType="floatType" />
