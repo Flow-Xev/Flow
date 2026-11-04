@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<objectAnimator xmlns:android="http://schemas.android.com/apk/res/android"
+    android:duration="560"
+    android:interpolator="@interpolator/splash_spring_overshoot"
+    android:propertyName="scaleX"
+    android:startOffset="0"
+    android:valueFrom="0.55"
+    android:valueTo="1"
+    android:valueType="floatType" />

@@ -1,0 +1,168 @@
+@file:Suppress("ktlint:standard:backing-property-naming")
+
+package app.zaid.flow.ui.screens.search
+
+import android.content.Context
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import androidx.paging.Pager
+import androidx.paging.PagingConfig
+import androidx.paging.PagingData
+import androidx.paging.cachedIn
+import app.zaid.flow.data.local.SearchFilter
+import app.zaid.flow.data.local.SearchHistoryRepository
+import app.zaid.flow.data.model.Video
+import app.zaid.flow.data.paging.SearchPagingSource
+import app.zaid.flow.data.paging.SearchResultItem
+import app.zaid.flow.data.recommendation.FlowNeuroEngine
+import app.zaid.flow.data.search.SearchSuggestionsRepository
+import app.zaid.flow.data.shorts.ShortsContentFilter
+import app.zaid.flow.data.shorts.queue.ShortsQueueHandoff
+import app.zaid.flow.data.shorts.queue.ShortsQueueSource
+import app.zaid.flow.data.stats.VideoStatsRecorder
+import app.zaid.flow.innertube.pages.search.SearchHeader
+import app.zaid.flow.innertube.pages.search.SearchSuggestion
+import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.launch
+import javax.inject.Inject
+
+data class SearchUiState(
+    val query: String = "",
+    val filters: SearchFilter = SearchFilter.DEFAULT,
+    val header: SearchHeader = SearchHeader(),
+)
+
+@HiltViewModel
+@OptIn(ExperimentalCoroutinesApi::class)
+class SearchViewModel
+    @Inject
+    constructor(
+        @ApplicationContext private val context: Context,
+        private val suggestionsRepository: SearchSuggestionsRepository,
+        private val shortsContentFilter: ShortsContentFilter,
+        private val shortsQueueHandoff: ShortsQueueHandoff,
+        private val searchHistory: SearchHistoryRepository,
+        private val videoStats: VideoStatsRecorder,
+        private val neuroEngine: FlowNeuroEngine,
+    ) : ViewModel() {
+        // Signal each distinct submitted query once — typing and filter churn stay silent.
+        private var lastSignaledQuery: String? = null
+        private val _uiState = MutableStateFlow(SearchUiState())
+        val uiState: StateFlow<SearchUiState> = _uiState.asStateFlow()
+
+        private data class SearchKey(
+            val query: String,
+            val filter: SearchFilter,
+        )
+
+        private val _searchKey = MutableStateFlow<SearchKey?>(null)
+
+        val searchResults: Flow<PagingData<SearchResultItem>> =
+            _searchKey
+                .filterNotNull()
+                .filter { it.query.isNotBlank() }
+                .combine(shortsContentFilter.enabled) { key, shortsEnabled -> key to shortsEnabled }
+                .flatMapLatest { (key, shortsEnabled) ->
+                    Pager(
+                        config =
+                            PagingConfig(
+                                pageSize = 20,
+                                prefetchDistance = 12,
+                                enablePlaceholders = false,
+                                initialLoadSize = 20,
+                            ),
+                        pagingSourceFactory = {
+                            SearchPagingSource(
+                                query = key.query,
+                                filter = key.filter,
+                                shortsEnabled = shortsEnabled,
+                                onHeader = ::onHeader,
+                                exclusions = { neuroEngine.feedExclusions() },
+                                minResultsPerLoad = 20,
+                                keepSuggestionShelves = true,
+                                endless = true,
+                            )
+                        },
+                    ).flow
+                }.cachedIn(viewModelScope)
+
+        fun shortsShelfSource(
+            shelf: List<Video>,
+            tapped: Video,
+        ): ShortsQueueSource = shortsQueueHandoff.sourceForShelf(shelf, tapped)
+
+        fun search(
+            query: String,
+            filters: SearchFilter = SearchFilter.DEFAULT,
+        ) {
+            if (query.isBlank()) {
+                clearSearch()
+                return
+            }
+            _uiState.value = SearchUiState(query = query, filters = filters)
+            _searchKey.value = SearchKey(query, filters)
+
+            // A typed search is the most explicit interest statement the user makes.
+            val normalized = query.trim().lowercase()
+            if (normalized != lastSignaledQuery) {
+                lastSignaledQuery = normalized
+                // Incognito: no learning, no recap count, no stored text.
+                if (!app.zaid.flow.account.AccountIncognito.enabled) {
+                    viewModelScope.launch {
+                        runCatching { FlowNeuroEngine.onSearchQuery(context, query) }
+                        videoStats.onSearch(query.takeIf { searchHistory.isSearchHistoryEnabled() })
+                    }
+                }
+            }
+        }
+
+        /** A search the user asked for, kept in history with its filters. Typing on TV goes through [search] and is not kept. */
+        fun submit(
+            query: String,
+            filters: SearchFilter,
+        ) {
+            search(query, filters)
+            rememberSearch(query, filters)
+        }
+
+        fun onSearchHistoryCleared() = videoStats.onSearchHistoryCleared()
+
+        fun updateFilters(filters: SearchFilter) {
+            val currentQuery = _uiState.value.query
+            _uiState.value = _uiState.value.copy(filters = filters)
+            if (currentQuery.isNotBlank()) {
+                _searchKey.value = SearchKey(currentQuery, filters)
+                rememberSearch(currentQuery, filters)
+            }
+        }
+
+        private fun rememberSearch(
+            query: String,
+            filters: SearchFilter,
+        ) {
+            if (query.isBlank()) return
+            viewModelScope.launch { searchHistory.saveSearchQuery(query, filters = filters) }
+        }
+
+        fun clearSearch() {
+            _uiState.value = SearchUiState()
+            _searchKey.value = null
+        }
+
+        suspend fun getSearchSuggestions(query: String): List<SearchSuggestion> =
+            runCatching { suggestionsRepository.suggestions(query) }.getOrDefault(emptyList())
+
+        private fun onHeader(header: SearchHeader) {
+            _uiState.value = _uiState.value.copy(header = header)
+        }
+    }
