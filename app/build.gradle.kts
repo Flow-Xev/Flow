@@ -294,7 +294,7 @@ dependencies {
 
     // Networking
     implementation(libs.okhttp)
-    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    implementation("androidx.security:security-crypto:1.1.0")
 
     // Ktor (Managed in libs.versions.toml)
     implementation(libs.ktor.client.core)
