@@ -61,6 +61,8 @@ class AccountManager
             val tvAccess: String? = null,
             val tvRefresh: String? = null,
             val tvExpiresAt: Long = 0L,
+            // Which mode this login belongs to: video-mode and music-mode accounts are separate lists.
+            val music: Boolean = false,
         ) {
             val isTv: Boolean get() = tvRefresh != null
         }
@@ -193,6 +195,11 @@ class AccountManager
         /** True while the app is in music mode; the active account below is the one chosen for that mode. */
         @Volatile private var musicMode = false
 
+        /** The account list shown to the person: only the logins of the mode they are in. */
+        private fun publishAccounts() {
+            _accounts.value = stored.filter { it.music == musicMode }.map { it.profile }
+        }
+
         private fun slotKey(music: Boolean = musicMode) = if (music) KEY_ACTIVE_MUSIC else KEY_ACTIVE
 
         /** Swaps in the account chosen for [music] mode, or signs the session out when that mode has none. */
@@ -200,7 +207,8 @@ class AccountManager
             if (music == musicMode) return
             musicMode = music
             val wanted = prefs.getString(slotKey(music), null)
-            val account = synchronized(lock) { stored.firstOrNull { it.profile.id == wanted } }
+            val account = synchronized(lock) { stored.firstOrNull { it.profile.id == wanted && it.music == music } }
+            publishAccounts()
             if (account == null) {
                 if (_activeId.value != null) deactivate()
             } else if (account.profile.id != _activeId.value) {
@@ -225,11 +233,11 @@ class AccountManager
                         ?.let { runCatching { json.decodeFromString<List<StoredAccount>>(it) }.getOrNull() }
                         .orEmpty()
                         .filter { it.isTv || isSignedInCookie(it.cookie) }
-                _accounts.value = stored.map { it.profile }
+                publishAccounts()
                 val wanted = prefs.getString(slotKey(), null)
                 val active =
-                    stored.firstOrNull { it.profile.id == wanted }
-                        ?: if (musicMode) null else stored.firstOrNull()
+                    stored.firstOrNull { it.profile.id == wanted && it.music == musicMode }
+                        ?: if (musicMode) null else stored.firstOrNull { !it.music }
                 if (active != null) {
                     activate(active, persist = false)
                     // Data from before accounts kept their own history belongs to the one in use.
@@ -307,15 +315,15 @@ class AccountManager
             if (!isSignedInCookie(cookie)) return
             val entryId: String
             synchronized(lock) {
-                val id = idFor(cookie)
+                val id = (if (musicMode) "m" else "") + idFor(cookie)
                 val existing = stored.firstOrNull { it.profile.id == id }
                 val profile =
                     (existing?.profile ?: AccountProfile(id = id, addedAt = System.currentTimeMillis()))
                         .let { if (name != null) it.copy(name = name) else it }
-                val entry = StoredAccount(profile, cookie)
+                val entry = StoredAccount(profile, cookie, music = musicMode)
                 // Re-signing in to a known account keeps its place in the list.
                 stored = (stored.filterNot { it.profile.id == id } + entry).sortedBy { it.profile.addedAt }
-                _accounts.value = stored.map { it.profile }
+                publishAccounts()
                 activate(entry, persist = true, freshVisitorData = visitorData)
                 entryId = entry.profile.id
             }
@@ -339,12 +347,12 @@ class AccountManager
             val entryId: String
             synchronized(lock) {
                 val revokedId = _activeId.value?.takeIf { it in reauthIds.value && stored.any { a -> a.profile.id == it && a.isTv } }
-                val id = revokedId ?: ("tv" + MessageDigest.getInstance("SHA-256").digest(tokens.refreshToken.toByteArray()).take(6).joinToString("") { "%02x".format(it) })
+                val id = revokedId ?: ((if (musicMode) "mtv" else "tv") + MessageDigest.getInstance("SHA-256").digest(tokens.refreshToken.toByteArray()).take(6).joinToString("") { "%02x".format(it) })
                 val existing = stored.firstOrNull { it.profile.id == id }
                 val profile = existing?.profile ?: AccountProfile(id = id, name = "YouTube TV", addedAt = System.currentTimeMillis())
-                val entry = StoredAccount(profile, cookie = "", tvAccess = tokens.accessToken, tvRefresh = tokens.refreshToken, tvExpiresAt = tokens.expiresAtMs)
+                val entry = StoredAccount(profile, cookie = "", tvAccess = tokens.accessToken, tvRefresh = tokens.refreshToken, tvExpiresAt = tokens.expiresAtMs, music = musicMode)
                 stored = (stored.filterNot { it.profile.id == id } + entry).sortedBy { it.profile.addedAt }
-                _accounts.value = stored.map { it.profile }
+                publishAccounts()
                 reauthIds.update { it - id }
                 activate(entry, persist = true)
                 entryId = id
@@ -397,7 +405,7 @@ class AccountManager
         /** Makes an account that is already on the device the active one. */
         fun switchTo(id: String) {
             if (id == _activeId.value) return
-            val target = synchronized(lock) { stored.firstOrNull { it.profile.id == id } } ?: return
+            val target = synchronized(lock) { stored.firstOrNull { it.profile.id == id && it.music == musicMode } } ?: return
             activate(target, persist = true)
             switchDataThenSync(target.profile.id)
         }
@@ -411,9 +419,9 @@ class AccountManager
                 stored.firstOrNull { it.profile.id == id }?.tvRefresh?.let(::revokeTvGrant)
                 wasActive = _activeId.value == id
                 stored = stored.filterNot { it.profile.id == id }
-                _accounts.value = stored.map { it.profile }
+                publishAccounts()
                 // Music mode never falls back to another account on its own.
-                next = if (wasActive && !musicMode) stored.firstOrNull() else null
+                next = if (wasActive && !musicMode) stored.firstOrNull { !it.music } else null
                 // The other mode must not keep pointing at an account that no longer exists.
                 val otherKey = slotKey(!musicMode)
                 if (prefs.getString(otherKey, null) == id) runCatching { prefs.edit().remove(otherKey).apply() }
@@ -448,14 +456,14 @@ class AccountManager
         /** Signs out of every account on this device. */
         fun signOutAll() {
             synchronized(lock) {
-                stored.mapNotNull { it.tvRefresh }.forEach(::revokeTvGrant)
-                stored = emptyList()
-                _accounts.value = emptyList()
+                stored.filter { it.music == musicMode }.mapNotNull { it.tvRefresh }.forEach(::revokeTvGrant)
+                stored = stored.filter { it.music != musicMode }
+                publishAccounts()
             }
             deactivate()
             persist()
-            runCatching { prefs.edit().remove(slotKey(false)).remove(slotKey(true)).apply() }
-            dataSwapper.discardAll()
+            runCatching { prefs.edit().remove(slotKey()).apply() }
+            if (!musicMode) dataSwapper.discardAll()
         }
 
         /** Re-imports history, likes and subscriptions for the active account now. */
@@ -506,7 +514,7 @@ class AccountManager
             synchronized(lock) {
                 val incomingIds = usable.map { it.profile.id }.toSet()
                 stored = (stored.filterNot { it.profile.id in incomingIds } + usable).sortedBy { it.profile.addedAt }
-                _accounts.value = stored.map { it.profile }
+                publishAccounts()
                 if (_activeId.value == null) {
                     activated = stored.firstOrNull { it.profile.id == backup.activeId } ?: stored.firstOrNull()
                 }
@@ -620,7 +628,7 @@ class AccountManager
                         avatarUrl = info.thumbnailUrl ?: current.profile.avatarUrl,
                     )
                 stored = stored.map { if (it.profile.id == id) it.copy(profile = updated) else it }
-                _accounts.value = stored.map { it.profile }
+                publishAccounts()
                 if (_activeId.value == id) _accountName.value = updated.displayName
             }
             persist()
@@ -648,6 +656,16 @@ class AccountManager
          * account's are set aside first, so nothing from one account shows up under another.
          */
         private fun switchDataThenSync(id: String) {
+            val isMusicAccount = synchronized(lock) { stored.firstOrNull { it.profile.id == id }?.music == true }
+            if (isMusicAccount) {
+                // A music login has no video history to swap or import; it only needs its profile, and the
+                // Music tab pulls its own library through MusicAccountSync.
+                scope.launch {
+                    loadProfile(id)
+                    onSignedIn?.invoke()
+                }
+                return
+            }
             scope.launch {
                 dataMutex.withLock {
                     try {

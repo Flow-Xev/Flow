@@ -408,6 +408,20 @@ internal fun LazyListScope.ytMusicHome(
     onCollectionMenu: (MusicTrack) -> Unit,
 ) {
     uiState.dynamicSections.forEachIndexed { index, section ->
+        val heroTracks = section.tracks.filterNot { it.isCollection }
+        if (section.title.trim().equals("Quick picks", ignoreCase = true) && heroTracks.isNotEmpty()) {
+            // YouTube Music's own Quick picks gets the same big hero cards as Flow's.
+            item(key = "ytm:$index:${section.title}") {
+                ArchiveQuickPicksHero(
+                    title = section.title,
+                    tracks = heroTracks,
+                    onPlayAll = { onSongClick(heroTracks.first(), heroTracks, section.title) },
+                    onTrackClick = { onSongClick(it, heroTracks, section.title) },
+                    onTrackMenu = onTrackMenu,
+                )
+            }
+            return@forEachIndexed
+        }
         item(key = "ytm:$index:${section.title}") {
             MusicTrackCardShelf(
                 title = section.title,
