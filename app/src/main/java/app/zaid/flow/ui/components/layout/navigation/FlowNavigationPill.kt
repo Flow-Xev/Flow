@@ -2,8 +2,10 @@ package app.zaid.flow.ui.components.layout.navigation
 
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -64,7 +66,13 @@ internal fun FlowNavigationBarHost(
 ) {
     val density = LocalDensity.current
     val inset = with(density) { ShortNavigationBarDefaults.windowInsets.getBottom(density).toDp() }
-    val p by animateFloatAsState(if (pill) 1f else 0f, MaterialTheme.motionScheme.defaultSpatialSpec(), label = "navPill")
+    // Spatial springs overshoot their target; a size, padding or corner radius must never go negative
+    // (that crashed with "Padding must be non-negative"), so the morph is driven by a non-bouncy tween.
+    val p by animateFloatAsState(
+        targetValue = if (pill) 1f else 0f,
+        animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing),
+        label = "navPill",
+    )
     val pillWidth = PillItemWidth * MUSIC_MODE_TABS.size + PillPadding * 2
     val colors = MaterialTheme.colorScheme
     val content = NavContent(tabs, pill)
@@ -112,7 +120,7 @@ private fun PillItems(
     onTabSelected: (FlowTab) -> Unit,
 ) {
     val index = tabs.indexOf(selectedTab).coerceAtLeast(0)
-    val x by animateDpAsState(PillItemWidth * index, MaterialTheme.motionScheme.fastSpatialSpec(), label = "pillIndicator")
+    val x by animateDpAsState(PillItemWidth * index, tween(durationMillis = 220, easing = FastOutSlowInEasing), label = "pillIndicator")
     Box(Modifier.fillMaxSize().padding(PillPadding)) {
         Box(
             Modifier

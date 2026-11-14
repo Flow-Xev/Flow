@@ -5,6 +5,8 @@
 
 package app.zaid.flow.ui.components.music.item
 
+import app.zaid.flow.ui.ModeSide
+import app.zaid.flow.ui.modeCard
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
@@ -91,6 +93,8 @@ fun MusicCollectionCard(
                     Modifier
                         .then(if (fillMaxWidth) Modifier.fillMaxWidth() else Modifier.height(thumbnailHeight))
                         .aspectRatio(aspectRatio)
+                        // Lets the video -> music switch land a flying thumbnail on this card.
+                        .modeCard(ModeSide.Music, "col:${thumbnailUrl.orEmpty()}:$title", thumbnailUrl.orEmpty(), 16f)
                         .clip(shape),
             )
             if (isPlaying) {

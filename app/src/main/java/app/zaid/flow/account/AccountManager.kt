@@ -12,6 +12,7 @@ import app.zaid.flow.account.tv.TvRefreshResult
 import app.zaid.flow.account.tv.TvTokens
 import app.zaid.flow.innertube.InnerTube
 import app.zaid.flow.innertube.YouTube
+import app.zaid.flow.ui.AppModeState
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -167,6 +168,10 @@ class AccountManager
             // A browser keeps its cookies current as Google rotates them; keep the saved login current too.
             innerTube.onCookieRefreshed = { fresh -> saveRefreshedCookie(fresh) }
             restore()
+            // Music mode keeps its own login: a YouTube account used for videos is not signed in there.
+            scope.launch {
+                AppModeState.isMusic.collect { applyMode(it) }
+            }
             resyncIfStale()
             // After launch has restored the shared identity, so the account's refreshed id is the one that stays.
             scope.launch {
@@ -180,6 +185,27 @@ class AccountManager
             if (!_signedIn.value || _syncing.value) return
             if (System.currentTimeMillis() - _lastSync.value > RESYNC_INTERVAL_MS) {
                 scope.launch { afterSignIn() }
+            }
+        }
+
+        // ---- Per-mode login ------------------------------------------------------------------
+
+        /** True while the app is in music mode; the active account below is the one chosen for that mode. */
+        @Volatile private var musicMode = false
+
+        private fun slotKey(music: Boolean = musicMode) = if (music) KEY_ACTIVE_MUSIC else KEY_ACTIVE
+
+        /** Swaps in the account chosen for [music] mode, or signs the session out when that mode has none. */
+        private fun applyMode(music: Boolean) {
+            if (music == musicMode) return
+            musicMode = music
+            val wanted = prefs.getString(slotKey(music), null)
+            val account = synchronized(lock) { stored.firstOrNull { it.profile.id == wanted } }
+            if (account == null) {
+                if (_activeId.value != null) deactivate()
+            } else if (account.profile.id != _activeId.value) {
+                activate(account, persist = false)
+                switchDataThenSync(account.profile.id)
             }
         }
 
@@ -200,8 +226,10 @@ class AccountManager
                         .orEmpty()
                         .filter { it.isTv || isSignedInCookie(it.cookie) }
                 _accounts.value = stored.map { it.profile }
-                val wanted = prefs.getString(KEY_ACTIVE, null)
-                val active = stored.firstOrNull { it.profile.id == wanted } ?: stored.firstOrNull()
+                val wanted = prefs.getString(slotKey(), null)
+                val active =
+                    stored.firstOrNull { it.profile.id == wanted }
+                        ?: if (musicMode) null else stored.firstOrNull()
                 if (active != null) {
                     activate(active, persist = false)
                     // Data from before accounts kept their own history belongs to the one in use.
@@ -251,7 +279,7 @@ class AccountManager
                 prefs
                     .edit()
                     .putString(KEY_ACCOUNTS, json.encodeToString(stored))
-                    .putString(KEY_ACTIVE, _activeId.value)
+                    .putString(slotKey(), _activeId.value)
                     .apply()
             }.onFailure { Log.w(TAG, "Could not save accounts: ${it.message}") }
         }
@@ -384,7 +412,11 @@ class AccountManager
                 wasActive = _activeId.value == id
                 stored = stored.filterNot { it.profile.id == id }
                 _accounts.value = stored.map { it.profile }
-                next = if (wasActive) stored.firstOrNull() else null
+                // Music mode never falls back to another account on its own.
+                next = if (wasActive && !musicMode) stored.firstOrNull() else null
+                // The other mode must not keep pointing at an account that no longer exists.
+                val otherKey = slotKey(!musicMode)
+                if (prefs.getString(otherKey, null) == id) runCatching { prefs.edit().remove(otherKey).apply() }
             }
             if (wasActive) {
                 val replacement = next
@@ -422,6 +454,7 @@ class AccountManager
             }
             deactivate()
             persist()
+            runCatching { prefs.edit().remove(slotKey(false)).remove(slotKey(true)).apply() }
             dataSwapper.discardAll()
         }
 
@@ -667,6 +700,7 @@ class AccountManager
             private const val TAG = "AccountManager"
             private const val KEY_ACCOUNTS = "accounts_v2"
             private const val KEY_ACTIVE = "active_account_id"
+            private const val KEY_ACTIVE_MUSIC = "active_music_account_id"
             private const val KEY_INCOGNITO = "account_incognito"
             private const val KEY_DATA_OWNER = "data_owner_account_id"
             private const val KEY_TV_CLIENT_ID = "tv_oauth_client_id"

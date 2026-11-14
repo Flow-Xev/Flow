@@ -36,15 +36,19 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 
 private const val MAX_CARDS = 7
-private const val LIFT_MS = 320
-private const val FLY_MS = 760
-private const val SETTLE_MS = 280
-private const val DEST_WAIT_MS = 900L
-private val Snap = CubicBezierEasing(0.34f, 1.45f, 0.64f, 1f)
+private const val LIFT_MS = 200
+private const val FLY_MS = 680
+private const val SETTLE_MS = 220
+private const val DEST_WAIT_MS = 700L
+
+// Material "emphasized" curve: quick departure, long soft landing, and never past 1 (an overshoot
+// would give a card a negative size and crash).
+private val Emphasized = CubicBezierEasing(0.2f, 0f, 0f, 1f)
 
 /** One flying card: where it starts, where it lands, and the artwork it carries. */
 private class Flight(
     val url: String,
+    val toUrl: String?,
     val from: Rect,
     val to: Rect,
     val fromCorner: Float,
@@ -76,7 +80,7 @@ fun ModeTransitionOverlay() {
         val h = window.height.toFloat()
         val sources = ModeCardRegistry.visible(from, w, h, MAX_CARDS)
         // Seed with the cards sitting where they started so the first frame matches the real screen.
-        flights = sources.map { Flight(it.url, it.rect, it.rect, it.cornerDp, it.cornerDp, false) }
+        flights = sources.map { Flight(it.url, null, it.rect, it.rect, it.cornerDp, it.cornerDp, false) }
         lift.animateTo(1f, tween(LIFT_MS, easing = FastOutSlowInEasing))
 
         t.action()
@@ -96,9 +100,9 @@ fun ModeTransitionOverlay() {
                 if (d == null) {
                     // Nothing to land on (still loading): shrink in place and let the page fade in.
                     val c = s.rect.center
-                    Flight(s.url, s.rect, Rect(c.x - 20f, c.y - 20f, c.x + 20f, c.y + 20f), s.cornerDp, 20f, true)
+                    Flight(s.url, null, s.rect, Rect(c.x - 20f, c.y - 20f, c.x + 20f, c.y + 20f), s.cornerDp, 20f, true)
                 } else {
-                    Flight(s.url, s.rect, d.rect, s.cornerDp, d.cornerDp, targets.getOrNull(i) == null)
+                    Flight(s.url, d.url, s.rect, d.rect, s.cornerDp, d.cornerDp, targets.getOrNull(i) == null)
                 }
             }
         // Screens with no cards on either side just cross-fade.
@@ -107,7 +111,10 @@ fun ModeTransitionOverlay() {
         AppModeState.transition.value = null
     }
 
-    val pageAlpha = (lift.value / 0.5f).coerceIn(0f, 1f) * (1f - settle.value)
+    // The old page dims out as the cards lift, then the new page is revealed underneath while the cards
+    // are still landing, so they settle onto real cards instead of flying across an empty screen.
+    val reveal = ((fly.value - 0.35f) / 0.5f).coerceIn(0f, 1f)
+    val pageAlpha = (lift.value / 0.6f).coerceIn(0f, 1f) * (1f - reveal) * 0.94f
     val colors = MaterialTheme.colorScheme
 
     Box(
@@ -123,26 +130,26 @@ fun ModeTransitionOverlay() {
         Box(Modifier.fillMaxSize().graphicsLayer { alpha = pageAlpha }.background(colors.background))
         flights.forEachIndexed { i, f ->
             // Cards leave one after another, like a deck unfolding.
-            val local = ((fly.value * 1.35f - i * 0.06f) / 1.0f).coerceIn(0f, 1f)
-            val m = Snap.transform(local)
+            val local = ((fly.value * 1.25f - i * 0.045f) / 1.0f).coerceIn(0f, 1f)
+            val m = Emphasized.transform(local)
             val arc = sin(PI.toFloat() * local)
             val dir = if (i % 2 == 0) 1f else -1f
             val left = lerp(f.from.left, f.to.left, m)
             val top = lerp(f.from.top, f.to.top, m) - arc * 36f
-            val cw = lerp(f.from.width, f.to.width, m)
-            val ch = lerp(f.from.height, f.to.height, m)
-            val corner = lerp(f.fromCorner, f.toCorner, m)
+            val cw = lerp(f.from.width, f.to.width, m).coerceAtLeast(1f)
+            val ch = lerp(f.from.height, f.to.height, m).coerceAtLeast(1f)
+            val corner = lerp(f.fromCorner, f.toCorner, m).coerceAtLeast(0f)
             val liftScale = 1f + 0.05f * lift.value * (1f - settle.value)
-            val cardAlpha = if (f.toFade) 1f - settle.value else 1f - ((settle.value - 0.4f) / 0.6f).coerceIn(0f, 1f)
+            val cardAlpha = 1f - settle.value
             Box(
                 modifier =
                     Modifier
                         .offset { IntOffset(left.roundToInt(), top.roundToInt()) }
                         .size(with(density) { cw.toDp() }, with(density) { ch.toDp() })
                         .graphicsLayer {
-                            rotationZ = dir * 5f * arc
-                            scaleX = liftScale + 0.06f * arc
-                            scaleY = liftScale - 0.03f * arc
+                            rotationZ = dir * 3f * arc
+                            scaleX = liftScale + 0.03f * arc
+                            scaleY = liftScale + 0.03f * arc
                             alpha = cardAlpha
                             shadowElevation = 14f * lift.value * (1f - settle.value)
                             shape = RoundedCornerShape(with(density) { corner.toDp() })
@@ -156,6 +163,18 @@ fun ModeTransitionOverlay() {
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize(),
                 )
+                // Mid-flight the artwork crossfades into the destination card's own, so a wide video
+                // thumbnail visibly reshapes into square cover art (and back).
+                val toUrl = f.toUrl
+                if (toUrl != null && toUrl != f.url) {
+                    val blend = ((m - 0.3f) / 0.4f).coerceIn(0f, 1f)
+                    AsyncImage(
+                        model = toUrl,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize().graphicsLayer { alpha = blend },
+                    )
+                }
             }
         }
     }
