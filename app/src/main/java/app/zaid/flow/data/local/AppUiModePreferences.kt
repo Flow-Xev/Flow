@@ -1,0 +1,38 @@
+package app.zaid.flow.data.local
+
+import android.content.Context
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
+import app.zaid.flow.platform.AppUiMode
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+import javax.inject.Inject
+
+private val Context.appUiModeDataStore: DataStore<Preferences> by safePreferencesDataStore(name = "app_ui_mode")
+
+/** Stores the interface override independently from playback preferences. */
+class AppUiModePreferences
+    @Inject
+    constructor(
+        @ApplicationContext context: Context,
+    ) {
+        private val appContext = context.applicationContext
+
+        val mode: Flow<AppUiMode> =
+            appContext.appUiModeDataStore.data.map { preferences ->
+                AppUiMode.fromStorage(preferences[MODE])
+            }
+
+        suspend fun setMode(mode: AppUiMode) {
+            appContext.appUiModeDataStore.edit { preferences ->
+                preferences[MODE] = mode.name
+            }
+        }
+
+        private companion object {
+            val MODE = stringPreferencesKey("mode")
+        }
+    }

@@ -1,0 +1,9 @@
+{
+  "_comment": "Optional manifest (https only). Set ClientUpdater.MANIFEST_URL. Only WEB, MWEB, WEB_REMIX, TVHTML5 move. 'blocked' is a kill-switch: listed versions are refused and rolled back. Features are [a-z0-9_.-].",
+  "clients": {
+    "WEB": { "version": "2.20261022.01.00", "features": [], "blocked": [] },
+    "MWEB": { "version": "2.20260708.05.00", "features": [], "blocked": [] },
+    "WEB_REMIX": { "version": "1.20260708.06.00", "features": [], "blocked": [] },
+    "TVHTML5": { "version": "7.20260707.07.00", "features": [], "blocked": [] }
+  }
+}
