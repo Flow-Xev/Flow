@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12+ splash: the red badge pops in with a small overshoot and the mark fades up just
+     after it lands, the way YouTube's logo opens. Older versions use the static drawable. -->
+<animated-vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/ic_splash_logo_base">
+    <target
+        android:name="badge"
+        android:animation="@animator/splash_badge_scale_x" />
+    <target
+        android:name="badge"
+        android:animation="@animator/splash_badge_scale_y" />
+    <target
+        android:name="plate"
+        android:animation="@animator/splash_plate_fade" />
+    <target
+        android:name="glyph"
+        android:animation="@animator/splash_glyph_fade" />
+</animated-vector>

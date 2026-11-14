@@ -1,0 +1,33 @@
+package app.zaid.flow.discord
+
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.jsonPrimitive
+import java.net.URI
+
+internal object DiscordLoginTokenExtractor {
+    fun isAllowedNavigation(url: String): Boolean =
+        runCatching {
+            val uri = URI(url)
+            uri.scheme.equals("https", ignoreCase = true) &&
+                uri.host.equals(DISCORD_HOST, ignoreCase = true)
+        }.getOrDefault(false)
+
+    fun isAuthenticatedAppUrl(url: String): Boolean =
+        runCatching {
+            val uri = URI(url)
+            isAllowedNavigation(url) &&
+                uri.path.trimEnd('/') == "/app"
+        }.getOrDefault(false)
+
+    fun decodeJavascriptValue(value: String): String? =
+        runCatching {
+            val element = Json.parseToJsonElement(value)
+            if (element is JsonNull) null else element.jsonPrimitive.content
+        }.getOrNull()
+            ?.trim()
+            ?.removeSurrounding("\"")
+            ?.takeIf { it.isNotEmpty() && it != "null" }
+
+    private const val DISCORD_HOST = "discord.com"
+}

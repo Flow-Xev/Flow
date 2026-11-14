@@ -1,0 +1,17 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="28dp"
+    android:height="28dp"
+    android:viewportWidth="28"
+    android:viewportHeight="28">
+    <!-- YouTube's filled Home glyph, measured from its bar: 25.1 x 22.9 dp inside a 28 dp box.
+         The path is drawn in the glyph's own 66 x 60 units and scaled by 0.38. -->
+    <group
+        android:translateX="1.45"
+        android:translateY="2.55"
+        android:scaleX="0.38"
+        android:scaleY="0.38">
+        <path
+            android:fillColor="#FF000000"
+            android:pathData="M33,0 L63,21.5 C65.5,23.3 64.3,27 61,27 H60 V56 C60,58.2 58.2,60 56,60 H39 V35 H27 V60 H10 C7.8,60 6,58.2 6,56 V27 H5 C1.7,27 0.5,23.3 3,21.5 Z" />
+    </group>
+</vector>

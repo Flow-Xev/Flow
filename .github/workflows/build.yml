@@ -1,0 +1,423 @@
+name: Android CI/CD
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+# Collapse superseded runs on branches and PRs. Tag runs publish the release
+# artifacts and must never be cancelled by a subsequent push.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+
+permissions:
+  contents: read
+
+env:
+  # Certificate of the official Flow release key. IzzyOnDroid and every
+  # installed client pin this value; an APK signed with anything else cannot
+  # be installed as an update. Changing it forces every user to reinstall.
+  EXPECTED_SIGNER_SHA256: 4322294ed4caa2d4294140095818080ffe8acc1fbe3cdc76107df45c5286be40
+  # Certificate of the nightly key. Every nightly must carry it so each one
+  # installs over the previous nightly without an uninstall.
+  EXPECTED_NIGHTLY_SIGNER_SHA256: e42225b5ab3ac68236e54567ef0c4878afbafcdd3d438fbaba343e2d70425bf0
+
+jobs:
+  build:
+    name: Build APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Check Kotlin formatting
+        run: >
+          ./gradlew spotlessCheck
+          --build-cache --stacktrace
+
+      - name: Decode Keystore
+        id: keystore
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$RELEASE_KEYSTORE_BASE64" ]; then
+            echo "$RELEASE_KEYSTORE_BASE64" | base64 --decode > release.keystore
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+            echo "Release keystore decoded."
+          elif [ "${GITHUB_REF#refs/tags/v}" != "$GITHUB_REF" ]; then
+            # A tag build publishes to GitHub Releases and IzzyOnDroid. Without
+            # the keystore, app/build.gradle.kts falls back to signingConfig =
+            # null and produces UNSIGNED APKs, which cannot be installed and
+            # would break the update path for every existing user.
+            echo "::error::RELEASE_KEYSTORE_BASE64 is unavailable for a tag build. Refusing to publish unsigned APKs."
+            exit 1
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "Release keystore secret is not available. Continuing with an unsigned CI build."
+          fi
+
+      - name: Decode nightly keystore
+        id: nightly_keystore
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        env:
+          NIGHTLY_KEYSTORE_BASE64: ${{ secrets.NIGHTLY_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$NIGHTLY_KEYSTORE_BASE64" ]; then
+            echo "$NIGHTLY_KEYSTORE_BASE64" | base64 --decode > nightly.keystore
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "push" ] && [ "$GITHUB_REF" = "refs/heads/main" ]; then
+            # Main publishes the nightly testers install; a debug-signed build
+            # could not update the previous one.
+            echo "::error::NIGHTLY_KEYSTORE_BASE64 is unavailable on a main push. Refusing to publish a debug-signed nightly."
+            exit 1
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "Nightly keystore secret is not available. This run's nightly is debug-signed and is not published."
+          fi
+
+      - name: Run unit tests
+        run: >
+          ./gradlew :app:testGithubDebugUnitTest :app:testFossDebugUnitTest
+          --max-workers=1 --build-cache --stacktrace
+
+      # Instrumentation tests are not executed in CI, but they must still
+      # compile: breakage here otherwise lands on main unnoticed.
+      - name: Compile instrumentation tests
+        run: >
+          ./gradlew :app:compileGithubDebugAndroidTestKotlin
+          --build-cache --stacktrace
+
+      - name: Lint GitHub nightly
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        run: >
+          ./gradlew :app:lintGithubNightly
+          --build-cache --stacktrace
+
+      - name: Lint GitHub release
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        run: >
+          ./gradlew :app:lintGithubRelease
+          --build-cache --stacktrace
+
+      - name: Build CI APKs
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        run: >
+          ./gradlew :app:assembleGithubRelease :app:assembleGithubNightly :app:assembleFossRelease
+          --max-workers=1 --build-cache --stacktrace
+        env:
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          NIGHTLY_STORE_PASSWORD: ${{ secrets.NIGHTLY_STORE_PASSWORD }}
+          NIGHTLY_KEY_ALIAS: ${{ secrets.NIGHTLY_KEY_ALIAS }}
+          NIGHTLY_KEY_PASSWORD: ${{ secrets.NIGHTLY_KEY_PASSWORD }}
+          LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
+          LASTFM_API_SECRET: ${{ secrets.LASTFM_API_SECRET }}
+
+      - name: Build release APKs
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        run: >
+          ./gradlew :app:assembleGithubRelease :app:assembleFossRelease
+          --max-workers=1 --build-cache --stacktrace
+        env:
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
+          LASTFM_API_SECRET: ${{ secrets.LASTFM_API_SECRET }}
+
+      # Guards the IzzyOnDroid/F-Droid update path: a wrong or missing key here
+      # is unrecoverable for installed users, so fail the build rather than
+      # publish. Skipped when no keystore was available, e.g. on fork PRs.
+      - name: Verify release signing certificate
+        if: ${{ steps.keystore.outputs.signed == 'true' }}
+        run: |
+          set -uo pipefail
+          apksigner=$(find "$ANDROID_SDK_ROOT/build-tools" -name apksigner -type f | sort -V | tail -1)
+          if [ -z "$apksigner" ]; then
+            echo "::error::apksigner was not found in the runner Android SDK."
+            exit 1
+          fi
+
+          status=0
+          for apk in \
+            app/build/outputs/apk/github/release/app-github-universal-release.apk \
+            app/build/outputs/apk/github/release/app-github-arm64-v8a-release.apk \
+            app/build/outputs/apk/github/release/app-github-armeabi-v7a-release.apk \
+            app/build/outputs/apk/foss/release/app-foss-universal-release.apk \
+            app/build/outputs/apk/foss/release/app-foss-arm64-v8a-release.apk \
+            app/build/outputs/apk/foss/release/app-foss-armeabi-v7a-release.apk
+          do
+            if [ ! -f "$apk" ]; then
+              echo "::error::Missing expected APK $apk"
+              status=1
+              continue
+            fi
+            actual=$("$apksigner" verify --print-certs "$apk" | grep -m1 'certificate SHA-256 digest' | awk '{print $NF}')
+            if [ "$actual" != "$EXPECTED_SIGNER_SHA256" ]; then
+              echo "::error::$(basename "$apk") is signed with '$actual', expected '$EXPECTED_SIGNER_SHA256'"
+              status=1
+            else
+              echo "OK $(basename "$apk") -> $actual"
+            fi
+          done
+          exit $status
+
+      # The run number in the file name is how the in-app updater tells
+      # nightlies apart (GitHubRelease.toNightlyReleaseIfNewer).
+      - name: Verify and name nightly APK
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        env:
+          NIGHTLY_SIGNED: ${{ steps.nightly_keystore.outputs.signed }}
+        run: |
+          set -euo pipefail
+          src=app/build/outputs/apk/github/nightly/app-github-universal-nightly.apk
+          test -f "$src"
+          if [ "$NIGHTLY_SIGNED" = "true" ]; then
+            apksigner=$(find "$ANDROID_SDK_ROOT/build-tools" -name apksigner -type f | sort -V | tail -1)
+            actual=$("$apksigner" verify --print-certs "$src" | grep -m1 'certificate SHA-256 digest' | awk '{print $NF}')
+            if [ "$actual" != "$EXPECTED_NIGHTLY_SIGNER_SHA256" ]; then
+              echo "::error::The nightly is signed with '$actual', expected '$EXPECTED_NIGHTLY_SIGNER_SHA256'"
+              exit 1
+            fi
+            echo "OK nightly -> $actual"
+          fi
+          mkdir -p dist-nightly
+          cp "$src" "dist-nightly/flow-nightly-${GITHUB_RUN_NUMBER}.apk"
+          (cd dist-nightly && sha256sum flow-nightly-*.apk | tee checksums.txt)
+
+      - name: Report individual APK sizes
+        shell: bash
+        run: |
+          shopt -s nullglob
+          apks=(
+            app/build/outputs/apk/github/release/app-github-universal-release*.apk
+            app/build/outputs/apk/github/release/app-github-arm64-v8a-release*.apk
+            app/build/outputs/apk/github/release/app-github-armeabi-v7a-release*.apk
+            app/build/outputs/apk/foss/release/app-foss-universal-release*.apk
+            app/build/outputs/apk/foss/release/app-foss-arm64-v8a-release*.apk
+            app/build/outputs/apk/foss/release/app-foss-armeabi-v7a-release*.apk
+          )
+          expected=6
+
+          if (( ${#apks[@]} != expected )); then
+            printf 'Expected %d published APKs, found %d.\n' "$expected" "${#apks[@]}" >&2
+            exit 1
+          fi
+
+          {
+            echo '## Individual APK sizes'
+            echo
+            echo '| APK | Size | Exact bytes |'
+            echo '|---|---:|---:|'
+            for apk in "${apks[@]}"; do
+              bytes=$(stat --format='%s' "$apk")
+              size=$(awk -v bytes="$bytes" 'BEGIN { printf "%.2f MiB", bytes / 1048576 }')
+              printf '| `%s` | %s | %s |\n' "$(basename "$apk")" "$size" "$bytes"
+            done
+            echo
+            echo '> GitHub and FOSS APKs are uploaded individually without compression. Nightly remains a compressed artifact on regular CI runs.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The universal APKs are what IzzyOnDroid and the README link to.
+      - name: Upload GitHub universal APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: flow-github-universal-release-apk
+          path: app/build/outputs/apk/github/release/app-github-universal-release*.apk
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Upload GitHub ARM64 APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: flow-github-arm64-release-apk
+          path: app/build/outputs/apk/github/release/app-github-arm64-v8a-release*.apk
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Upload GitHub ARMv7 APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: flow-github-armeabi-v7a-release-apk
+          path: app/build/outputs/apk/github/release/app-github-armeabi-v7a-release*.apk
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Upload Nightly APK
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: flow-nightly-apk
+          path: dist-nightly/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload FOSS universal APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: flow-foss-universal-release-apk
+          path: app/build/outputs/apk/foss/release/app-foss-universal-release*.apk
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Upload FOSS ARM64 APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: flow-foss-arm64-release-apk
+          path: app/build/outputs/apk/foss/release/app-foss-arm64-v8a-release*.apk
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Upload FOSS ARMv7 APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: flow-foss-armeabi-v7a-release-apk
+          path: app/build/outputs/apk/foss/release/app-foss-armeabi-v7a-release*.apk
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  # A rolling prerelease under the tag "nightly". GitHub's "latest release"
+  # never includes a prerelease, so stable builds never see it; nightly
+  # builds read it by tag (UpdateRepository).
+  nightly:
+    name: Publish nightly
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    permissions:
+      contents: write
+    concurrency:
+      group: nightly-publish
+      cancel-in-progress: false
+
+    steps:
+      - name: Download nightly APK
+        uses: actions/download-artifact@v8
+        with:
+          name: flow-nightly-apk
+          path: dist-nightly/
+
+      - name: Move the nightly tag and replace its assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          apk="flow-nightly-${GITHUB_RUN_NUMBER}.apk"
+          test -f "dist-nightly/$apk"
+          if gh release view nightly >/dev/null 2>&1; then
+            gh api -X PATCH "repos/$GH_REPO/git/refs/tags/nightly" -f sha="$GITHUB_SHA" -F force=true >/dev/null
+          else
+            gh release create nightly --target "$GITHUB_SHA" --prerelease --latest=false \
+              --title "Flow nightly" --notes "Rolling nightly build."
+          fi
+          gh release upload nightly "dist-nightly/$apk" dist-nightly/checksums.txt --clobber
+          for old in $(gh release view nightly --json assets --jq '.assets[].name'); do
+            if [ "$old" != "$apk" ] && [ "$old" != "checksums.txt" ]; then
+              gh release delete-asset nightly "$old" --yes
+            fi
+          done
+          gh release edit nightly --prerelease --latest=false \
+            --title "Flow nightly ${GITHUB_RUN_NUMBER}" \
+            --notes "Built from ${GITHUB_SHA::7} by run ${GITHUB_RUN_NUMBER}. Installs next to the stable app as Flow Nightly and updates itself from here."
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Download release APKs
+        uses: actions/download-artifact@v8
+        with:
+          pattern: flow-*-release-apk
+          path: dist/
+          merge-multiple: true
+
+      # flow.apk and flow-foss.apk are the universal builds and are a public
+      # contract: IzzyOnDroid matches release assets by file name, and the
+      # README links to them directly. Do not rename or drop them without
+      # first updating the IzzyOnDroid entry for io.github.aedev.flow.
+      - name: Rename APKs for release
+        run: |
+          set -euo pipefail
+          mv dist/app-github-universal-release.apk   dist/flow.apk
+          mv dist/app-foss-universal-release.apk     dist/flow-foss.apk
+          mv dist/app-github-arm64-v8a-release.apk   dist/flow-arm64-v8a.apk
+          mv dist/app-github-armeabi-v7a-release.apk dist/flow-armeabi-v7a.apk
+          mv dist/app-foss-arm64-v8a-release.apk     dist/flow-foss-arm64-v8a.apk
+          mv dist/app-foss-armeabi-v7a-release.apk   dist/flow-foss-armeabi-v7a.apk
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum flow*.apk > checksums.txt
+          cat checksums.txt
+
+      - name: Get version from tag
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate release notes
+        env:
+          RELEASE_VERSION: ${{ steps.get_version.outputs.VERSION }}
+        run: |
+          test -s release-notes.md
+          grep -Fqx "# Flow ${RELEASE_VERSION}" release-notes.md
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.get_version.outputs.VERSION }}
+          name: Flow ${{ steps.get_version.outputs.VERSION }}
+          body_path: release-notes.md
+          generate_release_notes: false
+          files: |
+            dist/flow.apk
+            dist/flow-foss.apk
+            dist/flow-arm64-v8a.apk
+            dist/flow-armeabi-v7a.apk
+            dist/flow-foss-arm64-v8a.apk
+            dist/flow-foss-armeabi-v7a.apk
+            dist/checksums.txt
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
