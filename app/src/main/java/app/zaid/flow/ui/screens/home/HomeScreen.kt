@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -209,7 +210,7 @@ fun HomeScreen(
                     }
                     androidx.compose.material3.FilledTonalIconButton(onClick = onMusicClick) {
                         Icon(
-                            androidx.compose.material.icons.Icons.Filled.MusicNote,
+                            Icons.Filled.MusicNote,
                             contentDescription = stringResource(R.string.nav_music),
                         )
                     }

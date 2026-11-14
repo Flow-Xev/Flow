@@ -83,7 +83,7 @@ internal fun FlowNavigationBarHost(
                     Modifier
                         .align(Alignment.BottomCenter)
                         .padding(bottom = lerp(0f, (PillBottomMargin + inset).value, p).dp)
-                        .width(lerp(maxWidth.value, pillWidth.value, p).dp)
+                        .width(lerp(this@BoxWithConstraints.maxWidth.value, pillWidth.value, p).dp)
                         .height(surfaceHeight),
                 shape = RoundedCornerShape(lerp(0f, PillHeight.value / 2f, p).dp),
                 color = lerpColor(colors.background, colors.surfaceContainerHigh, p),

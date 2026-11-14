@@ -9,6 +9,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -161,7 +162,7 @@ fun EnhancedMusicScreen(
                         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp),
                     ) {
                         Icon(
-                            androidx.compose.material.icons.Icons.Filled.Videocam,
+                            Icons.Filled.Videocam,
                             contentDescription = null,
                             modifier = Modifier.size(18.dp),
                         )
