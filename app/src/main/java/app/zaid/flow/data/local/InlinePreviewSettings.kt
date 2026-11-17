@@ -43,6 +43,6 @@ fun inlinePreviewAllowed(
     when {
         mode == InlinePreviewMode.OFF -> false
         !conditions.online -> false
-        mode == InlinePreviewMode.WIFI_ONLY -> conditions.onWifi && !conditions.metered
+        mode == InlinePreviewMode.WIFI_ONLY -> conditions.onWifi
         else -> true
     }
