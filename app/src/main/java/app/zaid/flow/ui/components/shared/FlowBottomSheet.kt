@@ -8,6 +8,9 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -38,6 +41,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.input.pointer.util.addPointerInputChange
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
@@ -54,6 +58,7 @@ private fun sheetSpring() =
 private const val DISMISS_PROGRESS_THRESHOLD = 0.55f
 private const val DISMISS_VELOCITY_THRESHOLD = 1_200f
 private const val DEFAULT_EXPANDED_HEIGHT_FRACTION = 0.75f
+private val MIN_HEIGHT_WITH_KEYBOARD = 220.dp
 
 /**
  * Three quarters of the window: the height a media sheet falls back to when its host does not
@@ -100,6 +105,10 @@ fun rememberFlowBottomSheetState(): FlowBottomSheetState = remember { FlowBottom
  *
  * @param expandedHeight fixed height for the sheet; when null the sheet wraps its content, bounded
  *   by [maxHeight].
+ * @param avoidKeyboard when true the sheet is lifted above the on-screen keyboard and its fixed
+ *   [expandedHeight] shrinks by the keyboard's height, so the top edge stays put (the video above
+ *   stays visible) and the content, including a text field, is never hidden behind the keyboard.
+ *   Leave false when the host already applies `imePadding` itself.
  * @param collapsedHeight the height the sheet animates down to before reporting [onDismiss]; the
  *   player leaves it above zero while the video is resizing to meet the sheet.
  * @param dismissible when false the sheet neither drags nor animates — it is a hosted panel, and
@@ -123,6 +132,7 @@ fun FlowBottomSheet(
     collapsedHeight: Dp = 0.dp,
     dismissible: Boolean = true,
     dismissOnOutsideTap: Boolean = true,
+    avoidKeyboard: Boolean = false,
     shape: Shape = BottomSheetDefaults.ExpandedShape,
     containerColor: Color = BottomSheetDefaults.ContainerColor,
     onBack: (() -> Unit)? = null,
@@ -139,6 +149,8 @@ fun FlowBottomSheet(
     val collapsedHeightPx = with(LocalDensity.current) { collapsedHeight.toPx() }.coerceAtLeast(0f)
     val latestCollapsedHeightPx by rememberUpdatedState(collapsedHeightPx)
 
+    val imeInsets = WindowInsets.ime
+    val minKeyboardHeightPx = with(LocalDensity.current) { MIN_HEIGHT_WITH_KEYBOARD.roundToPx() }
     val progress = remember { Animatable(0f) }
     var sheetHeightPx by remember { mutableIntStateOf(0) }
     var isAnimatingOut by remember { mutableStateOf(false) }
@@ -230,7 +242,7 @@ fun FlowBottomSheet(
         }
 
     Box(
-        modifier = modifier.fillMaxSize(),
+        modifier = modifier.then(if (avoidKeyboard) Modifier.imePadding() else Modifier).fillMaxSize(),
         contentAlignment = Alignment.BottomCenter,
     ) {
         if (dismissOnOutsideTap) {
@@ -248,7 +260,22 @@ fun FlowBottomSheet(
                 Modifier
                     .widthIn(max = BottomSheetDefaults.SheetMaxWidth)
                     .fillMaxWidth()
-                    .then(if (expandedHeight != null) Modifier.height(expandedHeight) else Modifier)
+                    .then(
+                        when {
+                            expandedHeight == null -> Modifier
+                            !avoidKeyboard -> Modifier.height(expandedHeight)
+                            else ->
+                                Modifier.layout { measurable, constraints ->
+                                    // Read in the layout phase so the keyboard animating only re-measures.
+                                    val target =
+                                        (expandedHeight.roundToPx() - imeInsets.getBottom(this))
+                                            .coerceAtLeast(minKeyboardHeightPx)
+                                    val h = target.coerceIn(constraints.minHeight, constraints.maxHeight)
+                                    val placeable = measurable.measure(constraints.copy(minHeight = h, maxHeight = h))
+                                    layout(placeable.width, placeable.height) { placeable.place(0, 0) }
+                                },
+                        },
+                    )
                     .then(if (maxHeight != null) Modifier.heightIn(max = maxHeight) else Modifier)
                     .onSizeChanged { size -> sheetHeightPx = size.height }
                     .graphicsLayer {
