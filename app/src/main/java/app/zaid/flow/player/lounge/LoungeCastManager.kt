@@ -184,6 +184,22 @@ object LoungeCastManager {
             }
         }
 
+    /** Connects to a previously paired TV without starting or requiring video playback. */
+    suspend fun connect(context: Context, tv: LoungeTv): Result<LoungeTv> =
+        withContext(Dispatchers.IO) {
+            lock.withLock {
+                runCatching {
+                    val fresh = refreshToken(context, tv)
+                    if (_connected.value?.screenId != fresh.screenId || sid == null) bindResilient(fresh)
+                    _connected.value = fresh
+                    rememberLast(context, fresh.screenId)
+                    _remote.value = LoungeRemoteState()
+                    startListening(fresh)
+                    fresh
+                }
+            }
+        }
+
     /** Links the TV that shows [code] (12 digits, from YouTube on the TV: Settings > Link with TV code). */
     suspend fun pair(
         context: Context,
