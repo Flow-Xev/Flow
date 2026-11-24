@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -28,6 +30,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
@@ -67,6 +70,7 @@ fun FlowCommentsBottomSheet(
     val sheetState = rememberFlowBottomSheetState()
     val commentsListState = rememberLazyListState()
     val tint = rememberMediaArtworkTint(artworkUrl)
+    val keyboardOpen = WindowInsets.ime.getBottom(LocalDensity.current) > 0
 
     LaunchedEffect(selectedFilter) {
         commentsListState.scrollToItem(0)
@@ -79,6 +83,8 @@ fun FlowCommentsBottomSheet(
         expandedHeight = expandedHeight ?: defaultSheetExpandedHeight(),
         collapsedHeight = collapsedHeight,
         dismissOnOutsideTap = dismissOnOutsideTap,
+        // A host that sizes the sheet itself (the player, under its video) needs it kept above the keyboard.
+        avoidKeyboard = expandedHeight != null,
         shape = androidx.compose.foundation.shape.RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
         containerColor = MaterialTheme.colorScheme.surface,
         onProgressChange = onSheetProgressChange,
@@ -93,6 +99,7 @@ fun FlowCommentsBottomSheet(
                 onFilterChanged = onFilterChanged,
                 onClose = { sheetState.dismiss() },
                 dragModifier = dragModifier,
+                compact = keyboardOpen,
             )
         },
     ) {
@@ -135,6 +142,7 @@ private fun CommentsSheetHeader(
     onFilterChanged: (CommentSortFilter) -> Unit,
     onClose: () -> Unit,
     dragModifier: Modifier,
+    compact: Boolean = false,
 ) {
     Column(modifier = dragModifier) {
         Box(
@@ -187,13 +195,17 @@ private fun CommentsSheetHeader(
                     Icon(Icons.Default.Close, contentDescription = stringResource(R.string.close), modifier = Modifier.size(18.dp))
                 }
             }
-            CommentSortChips(
-                selected = selectedFilter,
-                onSelect = onFilterChanged,
-                timedOnly = timedOnly,
-                onTimedChange = onTimedChange,
-                modifier = Modifier.padding(top = 10.dp, bottom = 4.dp),
-            )
+            // Hidden while the keyboard is up: the sheet only has the space above the keyboard, and the
+            // list and the text field need it more than the sort chips do.
+            if (!compact) {
+                CommentSortChips(
+                    selected = selectedFilter,
+                    onSelect = onFilterChanged,
+                    timedOnly = timedOnly,
+                    onTimedChange = onTimedChange,
+                    modifier = Modifier.padding(top = 10.dp, bottom = 4.dp),
+                )
+            }
         }
         HorizontalDivider(
             color =
