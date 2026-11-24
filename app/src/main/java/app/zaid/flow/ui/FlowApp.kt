@@ -732,8 +732,6 @@ private fun HomeCastSheet(onDismiss: () -> Unit) {
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var pickOther by remember { mutableStateOf(false) }
-    val needsVideo = "Play a video first, then pick a device to cast it."
-
     LaunchedEffect(Unit) {
         LoungeCastManager.load(context)
         DlnaCastManager.startDiscovery(context)
@@ -745,24 +743,16 @@ private fun HomeCastSheet(onDismiss: () -> Unit) {
     }
     DisposableEffect(Unit) { onDispose { DlnaCastManager.stopDiscovery() } }
 
-    fun castToTv(tv: LoungeTv) {
-        val current = video
-        if (current == null) {
-            error = needsVideo
-            return
-        }
+    fun connectToTv(tv: LoungeTv) {
         busy = true
         error = null
         scope.launch {
             if (DlnaCastManager.isCasting) DlnaCastManager.disconnect()
-            val player = EnhancedPlayerManager.getInstance().getPlayer()
-            val result = LoungeCastManager.cast(context, tv, current.id, player?.currentPosition ?: 0L)
+            val result = LoungeCastManager.connect(context, tv)
             busy = false
             result
-                .onSuccess {
-                    player?.pause()
-                    pickOther = false
-                }.onFailure { error = it.message ?: "Could not cast" }
+                .onSuccess { pickOther = false }
+                .onFailure { error = it.message ?: "Could not connect to TV" }
         }
     }
 
@@ -813,7 +803,7 @@ private fun HomeCastSheet(onDismiss: () -> Unit) {
                 loungeConnected = null,
                 loungeBusy = busy,
                 loungeError = error,
-                onLoungeTv = { castToTv(it) },
+                onLoungeTv = { connectToTv(it) },
                 onLoungeForget = { LoungeCastManager.forget(context, it) },
                 onLoungePair = { code ->
                     busy = true
@@ -821,7 +811,7 @@ private fun HomeCastSheet(onDismiss: () -> Unit) {
                     scope.launch {
                         val paired = LoungeCastManager.pair(context, code)
                         busy = false
-                        paired.onSuccess { castToTv(it) }.onFailure { error = it.message }
+                        paired.onSuccess { connectToTv(it) }.onFailure { busy = false; error = it.message }
                     }
                 },
                 onDeviceSelected = { device ->
