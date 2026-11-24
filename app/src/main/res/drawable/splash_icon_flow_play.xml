@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Splash-only wrapper around the Flow Play art, so the launcher's ic_fg_flow_play is never swapped for an animation. -->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/ic_fg_flow_play"
+    android:inset="0%" />
