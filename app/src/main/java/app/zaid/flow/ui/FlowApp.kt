@@ -75,7 +75,6 @@ import app.zaid.flow.ui.components.videoplayer.PlayerSheetValue
 import app.zaid.flow.ui.components.videoplayer.rememberPlayerDraggableState
 import app.zaid.flow.ui.screens.equalizer.EqualizerViewModel
 import app.zaid.flow.ui.screens.home.HomeViewModel
-import app.zaid.flow.ui.screens.notifications.NotificationViewModel
 import app.zaid.flow.ui.screens.player.VideoPlayerViewModel
 import app.zaid.flow.ui.screens.settings.index.IntegrationsIndex
 import app.zaid.flow.ui.screens.update.UPDATE_ROUTE
@@ -117,7 +116,6 @@ fun FlowApp(
 
     val playerViewModel: VideoPlayerViewModel = hiltViewModel(activity!!)
     // Activity-scoped so the unread badge has exactly one collector for the whole shell.
-    val notificationViewModel: NotificationViewModel = hiltViewModel(activity)
     val equalizerViewModel: EqualizerViewModel = hiltViewModel(activity)
     val playerUiStateResult = playerViewModel.uiState.collectAsStateWithLifecycle()
     val playerUiState by playerUiStateResult
@@ -528,8 +526,7 @@ fun FlowApp(
                                 }
 
                                 ProvideFlowGlobalActions(
-                                    unreadNotifications = notificationViewModel.unreadCount,
-                                    onOpenNotifications = { navController.navigate("notifications") },
+                                    onOpenCast = { navController.navigate("cast") },
                                     onOpenSettings = { navController.navigate("settings") },
                                 ) {
                                     CompositionLocalProvider(
