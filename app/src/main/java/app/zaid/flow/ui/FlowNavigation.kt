@@ -49,6 +49,47 @@ import app.zaid.flow.ui.screens.subscriptions.SubscriptionsScreen
 import app.zaid.flow.ui.screens.update.UPDATE_ROUTE
 import app.zaid.flow.ui.screens.update.UpdateScreen
 import kotlinx.coroutines.flow.first
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Cast
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Tv
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import app.zaid.flow.R
+import app.zaid.flow.player.EnhancedPlayerManager
+import app.zaid.flow.player.dlna.DlnaCastManager
+import app.zaid.flow.player.lounge.LoungeCastManager
+import app.zaid.flow.ui.components.layout.flowBottomContentPadding
+import app.zaid.flow.ui.components.layout.topbar.FlowTopBar
+import app.zaid.flow.ui.components.shared.FlowMaxContentWidth
+import kotlinx.coroutines.launch
 
 @UnstableApi
 fun NavGraphBuilder.flowAppGraph(
@@ -109,6 +150,12 @@ fun NavGraphBuilder.flowAppGraph(
     composable(UPDATE_ROUTE) {
         currentRoute.value = UPDATE_ROUTE
         UpdateScreen(onClose = { navController.popBackStack() })
+    }
+
+    // Cast Screen
+    composable("cast") {
+        currentRoute.value = "cast"
+        CastScreen(onBack = { navController.popBackStack() })
     }
 
     // Notifications Screen
@@ -614,4 +661,210 @@ fun NavGraphBuilder.flowAppGraph(
         defaultStartRoute = defaultStartRoute,
         onMusicStarted = onMusicStarted,
     )
+}
+
+/**
+ * Full-screen cast hub opened from the top bar's cast button.
+ *
+ * Adapts to any form factor: below 840 dp wide (phones, foldables folded, split-screen) the two
+ * sections stack in one scrolling column; at 840 dp and up (tablets, unfolded foldables, landscape,
+ * TV, desktop mode) they sit side by side. Both layouts scroll, so short landscape windows and
+ * large font scales never clip content, and the keyboard never covers the TV code field.
+ */
+@Composable
+private fun CastScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val video by GlobalPlayerState.currentVideo.collectAsStateWithLifecycle()
+    val devices by DlnaCastManager.devices.collectAsStateWithLifecycle()
+    val discovering by DlnaCastManager.isDiscovering.collectAsStateWithLifecycle()
+    val dlnaDevice by DlnaCastManager.currentDevice.collectAsStateWithLifecycle()
+    val tvs by LoungeCastManager.savedTvs.collectAsStateWithLifecycle()
+    val connected by LoungeCastManager.connected.collectAsStateWithLifecycle()
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var code by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) {
+        LoungeCastManager.load(context)
+        DlnaCastManager.startDiscovery(context)
+        if (LoungeCastManager.connected.value == null) {
+            busy = true
+            LoungeCastManager.resume(context)
+            busy = false
+        }
+    }
+    DisposableEffect(Unit) { onDispose { DlnaCastManager.stopDiscovery() } }
+
+    val needsVideo = "Play a video first, then pick a device to cast it."
+
+    fun castToTv(tv: app.zaid.flow.player.lounge.LoungeTv) {
+        val current = video
+        if (current == null) {
+            error = needsVideo
+            return
+        }
+        busy = true
+        error = null
+        scope.launch {
+            val player = EnhancedPlayerManager.getInstance().getPlayer()
+            val result = LoungeCastManager.cast(context, tv, current.id, player?.currentPosition ?: 0L)
+            busy = false
+            result
+                .onSuccess { player?.pause() }
+                .onFailure { error = it.message ?: "Could not cast" }
+        }
+    }
+
+    val statusSection: @Composable () -> Unit = {
+        val name = connected?.name ?: dlnaDevice?.friendlyName
+        if (name != null) {
+            Text(stringResource(R.string.cast_connected), style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = stringResource(R.string.lounge_casting_to, name),
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (connected != null) {
+                    TextButton(onClick = { scope.launch { LoungeCastManager.pause() } }) { Text(stringResource(R.string.lounge_pause)) }
+                    TextButton(onClick = { scope.launch { LoungeCastManager.play() } }) { Text(stringResource(R.string.lounge_play)) }
+                }
+                TextButton(
+                    onClick = {
+                        DlnaCastManager.disconnect()
+                        scope.launch { LoungeCastManager.stop() }
+                    },
+                ) { Text(stringResource(R.string.dlna_stop_casting)) }
+            }
+            HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+        }
+    }
+
+    val tvSection: @Composable () -> Unit = {
+        Text(stringResource(R.string.lounge_section_title), style = MaterialTheme.typography.titleMedium)
+        tvs.forEach { tv ->
+            Row(
+                modifier = Modifier.fillMaxWidth().clickable(enabled = !busy) { castToTv(tv) }.padding(vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Outlined.Tv, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.width(12.dp))
+                Text(tv.name, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                TextButton(onClick = { LoungeCastManager.forget(context, tv) }) { Text(stringResource(R.string.lounge_forget)) }
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
+            OutlinedTextField(
+                value = code,
+                onValueChange = { code = it.filter { c -> c.isDigit() || c == ' ' || c == '-' }.take(20) },
+                label = { Text(stringResource(R.string.lounge_code_hint)) },
+                singleLine = true,
+                enabled = !busy,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(8.dp))
+            TextButton(
+                enabled = !busy && code.count(Char::isDigit) == 12,
+                onClick = {
+                    busy = true
+                    error = null
+                    scope.launch {
+                        val paired = LoungeCastManager.pair(context, code)
+                        busy = false
+                        paired.onSuccess { code = ""; castToTv(it) }.onFailure { error = it.message }
+                    }
+                },
+            ) {
+                if (busy) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp) else Text(stringResource(R.string.lounge_link))
+            }
+        }
+        Text(
+            text = error ?: stringResource(R.string.lounge_code_help),
+            style = MaterialTheme.typography.bodySmall,
+            color = if (error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+    }
+
+    val deviceSection: @Composable () -> Unit = {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = stringResource(R.string.dlna_cast_to_device),
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f),
+            )
+            if (discovering) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+            } else {
+                IconButton(onClick = { DlnaCastManager.startDiscovery(context) }) {
+                    Icon(Icons.Outlined.Refresh, contentDescription = stringResource(R.string.dlna_searching))
+                }
+            }
+        }
+        if (devices.isEmpty()) {
+            Text(
+                text = stringResource(if (discovering) R.string.dlna_searching else R.string.dlna_no_devices),
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+        devices.forEach { device ->
+            Row(
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            val current = video
+                            if (current == null) {
+                                error = needsVideo
+                            } else {
+                                val url =
+                                    EnhancedPlayerManager.getInstance().getPlayer()
+                                        ?.currentMediaItem?.localConfiguration?.uri?.toString()
+                                DlnaCastManager.castStreamInfo(device, current.title, null, url)
+                            }
+                        }.padding(vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Outlined.Cast, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.width(12.dp))
+                Text(device.friendlyName, style = MaterialTheme.typography.bodyLarge)
+            }
+            HorizontalDivider()
+        }
+        if (devices.isNotEmpty() && error != null) {
+            Text(error!!, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 8.dp))
+        }
+    }
+
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        contentWindowInsets = WindowInsets(0.dp),
+        topBar = { FlowTopBar(title = stringResource(R.string.cast_to_tv), onBack = onBack) },
+    ) { padding ->
+        BoxWithConstraints(
+            modifier = Modifier.fillMaxSize().padding(padding).imePadding(),
+            contentAlignment = Alignment.TopCenter,
+        ) {
+            val wide = maxWidth >= 840.dp
+            val contentPadding = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = flowBottomContentPadding(16.dp))
+            if (wide) {
+                Column(Modifier.widthIn(max = 1100.dp).fillMaxWidth().verticalScroll(rememberScrollState()).then(contentPadding)) {
+                    statusSection()
+                    Row(horizontalArrangement = Arrangement.spacedBy(32.dp)) {
+                        Column(Modifier.weight(1f)) { tvSection() }
+                        Column(Modifier.weight(1f)) { deviceSection() }
+                    }
+                }
+            } else {
+                Column(Modifier.widthIn(max = FlowMaxContentWidth).fillMaxWidth().verticalScroll(rememberScrollState()).then(contentPadding)) {
+                    statusSection()
+                    tvSection()
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
+                    deviceSection()
+                }
+            }
+        }
+    }
 }
