@@ -68,8 +68,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import app.zaid.flow.R
-import app.zaid.flow.player.EnhancedPlayerManager
-import app.zaid.flow.player.GlobalPlayerState
 import app.zaid.flow.player.dlna.DlnaCastManager
 import app.zaid.flow.player.lounge.LoungeCastManager
 import app.zaid.flow.player.lounge.LoungeTv
@@ -732,6 +730,8 @@ private fun HomeCastSheet(onDismiss: () -> Unit) {
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var pickOther by remember { mutableStateOf(false) }
+    val needsVideo = "Play a video first, then pick a device to cast it."
+
     LaunchedEffect(Unit) {
         LoungeCastManager.load(context)
         DlnaCastManager.startDiscovery(context)
@@ -743,16 +743,24 @@ private fun HomeCastSheet(onDismiss: () -> Unit) {
     }
     DisposableEffect(Unit) { onDispose { DlnaCastManager.stopDiscovery() } }
 
-    fun connectToTv(tv: LoungeTv) {
+    fun castToTv(tv: LoungeTv) {
+        val current = video
         busy = true
         error = null
         scope.launch {
             if (DlnaCastManager.isCasting) DlnaCastManager.disconnect()
-            val result = LoungeCastManager.connect(context, tv)
+            val player = EnhancedPlayerManager.getInstance().getPlayer()
+            val result = if (current == null) {
+                LoungeCastManager.connect(context, tv).map { Unit }
+            } else {
+                LoungeCastManager.cast(context, tv, current.id, player?.currentPosition ?: 0L)
+            }
             busy = false
             result
-                .onSuccess { pickOther = false }
-                .onFailure { error = it.message ?: "Could not connect to TV" }
+                .onSuccess {
+                    if (current != null) player?.pause()
+                    pickOther = false
+                }.onFailure { error = it.message ?: "Could not connect to TV" }
         }
     }
 
@@ -803,7 +811,7 @@ private fun HomeCastSheet(onDismiss: () -> Unit) {
                 loungeConnected = null,
                 loungeBusy = busy,
                 loungeError = error,
-                onLoungeTv = { connectToTv(it) },
+                onLoungeTv = { castToTv(it) },
                 onLoungeForget = { LoungeCastManager.forget(context, it) },
                 onLoungePair = { code ->
                     busy = true
@@ -811,7 +819,7 @@ private fun HomeCastSheet(onDismiss: () -> Unit) {
                     scope.launch {
                         val paired = LoungeCastManager.pair(context, code)
                         busy = false
-                        paired.onSuccess { connectToTv(it) }.onFailure { busy = false; error = it.message }
+                        paired.onSuccess { castToTv(it) }.onFailure { error = it.message }
                     }
                 },
                 onDeviceSelected = { device ->
