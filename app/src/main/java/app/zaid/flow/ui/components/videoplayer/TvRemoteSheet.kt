@@ -79,6 +79,7 @@ internal fun TvRemoteSheet(
     channelName: String,
     onStop: () -> Unit,
     onDismiss: () -> Unit,
+    onSwitchDevice: (() -> Unit)? = null,
 ) {
     val state by LoungeCastManager.remote.collectAsStateWithLifecycle()
     val reconnecting by LoungeCastManager.reconnecting.collectAsStateWithLifecycle()
@@ -234,8 +235,11 @@ internal fun TvRemoteSheet(
             }
             }
 
-            TextButton(onClick = onStop, modifier = Modifier.align(Alignment.CenterHorizontally)) {
-                Text(stringResource(R.string.dlna_stop_casting))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                if (onSwitchDevice != null) {
+                    TextButton(onClick = onSwitchDevice) { Text(stringResource(R.string.dlna_cast_to_device)) }
+                }
+                TextButton(onClick = onStop) { Text(stringResource(R.string.dlna_stop_casting)) }
             }
         }
     }
