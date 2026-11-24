@@ -255,27 +255,28 @@ fun FlowBottomSheet(
                         },
             )
         }
+        val heightModifier: Modifier =
+            if (expandedHeight == null) {
+                Modifier
+            } else if (!avoidKeyboard) {
+                Modifier.height(expandedHeight)
+            } else {
+                Modifier.layout { measurable, constraints ->
+                    // Read in the layout phase so the keyboard animating only re-measures.
+                    val target =
+                        (expandedHeight.roundToPx() - imeInsets.getBottom(this))
+                            .coerceAtLeast(minKeyboardHeightPx)
+                    val h = target.coerceIn(constraints.minHeight, constraints.maxHeight)
+                    val placeable = measurable.measure(constraints.copy(minHeight = h, maxHeight = h))
+                    layout(placeable.width, placeable.height) { placeable.place(0, 0) }
+                }
+            }
         Surface(
             modifier =
                 Modifier
                     .widthIn(max = BottomSheetDefaults.SheetMaxWidth)
                     .fillMaxWidth()
-                    .then(
-                        when {
-                            expandedHeight == null -> Modifier
-                            !avoidKeyboard -> Modifier.height(expandedHeight)
-                            else ->
-                                Modifier.layout { measurable, constraints ->
-                                    // Read in the layout phase so the keyboard animating only re-measures.
-                                    val target =
-                                        (expandedHeight.roundToPx() - imeInsets.getBottom(this))
-                                            .coerceAtLeast(minKeyboardHeightPx)
-                                    val h = target.coerceIn(constraints.minHeight, constraints.maxHeight)
-                                    val placeable = measurable.measure(constraints.copy(minHeight = h, maxHeight = h))
-                                    layout(placeable.width, placeable.height) { placeable.place(0, 0) }
-                                },
-                        },
-                    )
+                    .then(heightModifier)
                     .then(if (maxHeight != null) Modifier.heightIn(max = maxHeight) else Modifier)
                     .onSizeChanged { size -> sheetHeightPx = size.height }
                     .graphicsLayer {
