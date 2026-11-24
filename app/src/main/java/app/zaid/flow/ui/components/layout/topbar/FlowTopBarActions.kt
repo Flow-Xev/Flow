@@ -3,7 +3,7 @@ package app.zaid.flow.ui.components.layout.topbar
 import androidx.compose.foundation.layout.Box
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.outlined.Notifications
+import androidx.compose.material.icons.outlined.Cast
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -17,16 +17,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.zaid.flow.R
 
 /**
- * The Notifications and Settings actions every root destination gets.
+ * The Cast and Settings actions every root destination gets.
  *
  * Renders nothing when the shell has not provided [LocalFlowGlobalActions] — the case in previews
  * and in isolated Compose tests.
@@ -34,33 +32,17 @@ import app.zaid.flow.R
 @Composable
 internal fun FlowGlobalActionsRow() {
     val actions = LocalFlowGlobalActions.current ?: return
-    val unreadCount by actions.unreadNotifications.collectAsStateWithLifecycle()
-
-    FlowNotificationsAction(
-        unreadCount = unreadCount,
-        onClick = actions.onOpenNotifications,
-    )
+    IconButton(onClick = actions.onOpenCast) {
+        Icon(
+            imageVector = Icons.Outlined.Cast,
+            contentDescription = stringResource(R.string.cast_to_tv),
+        )
+    }
     IconButton(onClick = actions.onOpenSettings) {
         Icon(
             imageVector = Icons.Outlined.Settings,
             contentDescription = stringResource(R.string.settings),
         )
-    }
-}
-
-@Composable
-private fun FlowNotificationsAction(
-    @Suppress("UNUSED_PARAMETER") unreadCount: Int,
-    onClick: () -> Unit,
-) {
-    IconButton(onClick = onClick) {
-        Box(contentAlignment = Alignment.TopEnd) {
-            Icon(
-                imageVector = Icons.Outlined.Notifications,
-                contentDescription = stringResource(R.string.notifications),
-            )
-            // No unread-count badge: the bell stays a plain icon, as in YouTube.
-        }
     }
 }
 
