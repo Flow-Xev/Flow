@@ -61,6 +61,21 @@ import app.zaid.flow.ui.components.layout.navigation.rememberFlowNavigationScrol
 import app.zaid.flow.ui.components.layout.navigation.resolveDefaultFlowTab
 import app.zaid.flow.ui.components.layout.navigation.visibleFlowTabs
 import app.zaid.flow.ui.components.layout.topbar.ProvideFlowGlobalActions
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import app.zaid.flow.R
+import app.zaid.flow.player.EnhancedPlayerManager
+import app.zaid.flow.player.GlobalPlayerState
+import app.zaid.flow.player.dlna.DlnaCastManager
+import app.zaid.flow.player.lounge.LoungeCastManager
+import app.zaid.flow.player.lounge.LoungeTv
+import app.zaid.flow.ui.components.videoplayer.DlnaDevicePickerDialog
+import app.zaid.flow.ui.components.videoplayer.TvRemoteSheet
+import kotlinx.coroutines.launch
 import app.zaid.flow.ui.components.music.common.ProvideMusicPlaybackState
 import app.zaid.flow.ui.components.music.sheet.LocalMusicMenus
 import app.zaid.flow.ui.components.music.sheet.rememberMusicMenus
@@ -113,6 +128,7 @@ fun FlowApp(
         onDispose { navController.removeOnDestinationChangedListener(listener) }
     }
     val snackbarHostState = remember { androidx.compose.material3.SnackbarHostState() }
+    var showCast by remember { mutableStateOf(false) }
 
     val playerViewModel: VideoPlayerViewModel = hiltViewModel(activity!!)
     // Activity-scoped so the unread badge has exactly one collector for the whole shell.
@@ -525,8 +541,10 @@ fun FlowApp(
                                     homeViewModel.initialize(context.applicationContext)
                                 }
 
+                                if (showCast) HomeCastSheet(onDismiss = { showCast = false })
+
                                 ProvideFlowGlobalActions(
-                                    onOpenCast = { navController.navigate("cast") },
+                                    onOpenCast = { showCast = true },
                                     onOpenSettings = { navController.navigate("settings") },
                                 ) {
                                     CompositionLocalProvider(
@@ -692,5 +710,140 @@ fun FlowApp(
                 onNavigateToDonations = { navController.navigate("donations") },
             )
         }
+    }
+}
+
+/**
+ * The cast sheet opened by the top bar's cast button. Same sheets as the player's cast button:
+ * the device picker while nothing is connected, the remote (or a "casting" sheet for DLNA) once a
+ * device is connected, each with a button to pick another device.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HomeCastSheet(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val video by GlobalPlayerState.currentVideo.collectAsStateWithLifecycle()
+    val devices by DlnaCastManager.devices.collectAsStateWithLifecycle()
+    val discovering by DlnaCastManager.isDiscovering.collectAsStateWithLifecycle()
+    val dlnaDevice by DlnaCastManager.currentDevice.collectAsStateWithLifecycle()
+    val tvs by LoungeCastManager.savedTvs.collectAsStateWithLifecycle()
+    val connected by LoungeCastManager.connected.collectAsStateWithLifecycle()
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var pickOther by remember { mutableStateOf(false) }
+    val needsVideo = "Play a video first, then pick a device to cast it."
+
+    LaunchedEffect(Unit) {
+        LoungeCastManager.load(context)
+        DlnaCastManager.startDiscovery(context)
+        if (LoungeCastManager.connected.value == null) {
+            busy = true
+            LoungeCastManager.resume(context)
+            busy = false
+        }
+    }
+    DisposableEffect(Unit) { onDispose { DlnaCastManager.stopDiscovery() } }
+
+    fun castToTv(tv: LoungeTv) {
+        val current = video
+        if (current == null) {
+            error = needsVideo
+            return
+        }
+        busy = true
+        error = null
+        scope.launch {
+            if (DlnaCastManager.isCasting) DlnaCastManager.disconnect()
+            val player = EnhancedPlayerManager.getInstance().getPlayer()
+            val result = LoungeCastManager.cast(context, tv, current.id, player?.currentPosition ?: 0L)
+            busy = false
+            result
+                .onSuccess {
+                    player?.pause()
+                    pickOther = false
+                }.onFailure { error = it.message ?: "Could not cast" }
+        }
+    }
+
+    val tv = connected
+    val dlna = dlnaDevice
+    when {
+        tv != null && !pickOther ->
+            TvRemoteSheet(
+                tv = tv,
+                videoId = video?.id ?: "",
+                videoTitle = video?.title ?: "",
+                channelName = video?.channelName ?: "",
+                onStop = {
+                    scope.launch { LoungeCastManager.stop() }
+                    onDismiss()
+                },
+                onDismiss = onDismiss,
+                onSwitchDevice = { pickOther = true },
+            )
+
+        dlna != null && !pickOther ->
+            ModalBottomSheet(onDismissRequest = onDismiss) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 20.dp).padding(bottom = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(stringResource(R.string.cast_connected), style = MaterialTheme.typography.titleMedium)
+                    Text(stringResource(R.string.lounge_casting_to, dlna.friendlyName), style = MaterialTheme.typography.bodyMedium)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                        TextButton(onClick = { pickOther = true }) { Text(stringResource(R.string.dlna_cast_to_device)) }
+                        TextButton(
+                            onClick = {
+                                DlnaCastManager.disconnect()
+                                onDismiss()
+                            },
+                        ) { Text(stringResource(R.string.dlna_stop_casting)) }
+                    }
+                }
+            }
+
+        else ->
+            DlnaDevicePickerDialog(
+                devices = devices,
+                isDiscovering = discovering,
+                isCasting = false,
+                videoTitle = video?.title ?: "",
+                loungeTvs = tvs,
+                loungeConnected = null,
+                loungeBusy = busy,
+                loungeError = error,
+                onLoungeTv = { castToTv(it) },
+                onLoungeForget = { LoungeCastManager.forget(context, it) },
+                onLoungePair = { code ->
+                    busy = true
+                    error = null
+                    scope.launch {
+                        val paired = LoungeCastManager.pair(context, code)
+                        busy = false
+                        paired.onSuccess { castToTv(it) }.onFailure { error = it.message }
+                    }
+                },
+                onDeviceSelected = { device ->
+                    val current = video
+                    if (current == null) {
+                        error = needsVideo
+                    } else {
+                        if (LoungeCastManager.connected.value != null) scope.launch { LoungeCastManager.stop() }
+                        val url =
+                            EnhancedPlayerManager
+                                .getInstance()
+                                .getPlayer()
+                                ?.currentMediaItem
+                                ?.localConfiguration
+                                ?.uri
+                                ?.toString()
+                        DlnaCastManager.castStreamInfo(device, current.title, null, url)
+                        onDismiss()
+                    }
+                },
+                onStopCasting = {},
+                onDismiss = onDismiss,
+            )
     }
 }
