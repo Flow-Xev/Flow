@@ -173,7 +173,8 @@ class AccountManager
         fun resyncIfStale() {
             if (!_signedIn.value || _syncing.value) return
             if (System.currentTimeMillis() - _lastSync.value > RESYNC_INTERVAL_MS) {
-                scope.launch { afterSignIn() }
+                // A routine refresh only needs what is new; the full history is pulled at sign-in.
+                scope.launch { afterSignIn(fullImport = false) }
             }
         }
 
@@ -592,7 +593,7 @@ class AccountManager
             prefs.edit().putString(KEY_DATA_OWNER, id).apply()
         }
 
-        suspend fun afterSignIn() {
+        suspend fun afterSignIn(fullImport: Boolean = true) {
             val id = _activeId.value ?: return
             if (!_syncing.compareAndSet(expect = false, update = true)) return
             try {
@@ -603,7 +604,7 @@ class AccountManager
                     // imports asks the client the account signed in with (web cookie or TV bearer token).
                     loadProfile(id)
                     subscriptionImporter.importFromAccount()
-                    accountSync.syncOnLogin()
+                    accountSync.syncOnLogin(fullImport)
                 }
                 val now = System.currentTimeMillis()
                 runCatching { prefs.edit().putLong(syncKey(id), now).apply() }
