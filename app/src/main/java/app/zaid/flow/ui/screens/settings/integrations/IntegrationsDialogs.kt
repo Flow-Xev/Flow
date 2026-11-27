@@ -69,12 +69,16 @@ internal fun IntegrationsDialogs(
         IntegrationsDialog.GEMINI_KEY -> {
             // Never prefilled: the saved key is not shown again, only replaced or removed.
             var input by rememberSaveable { mutableStateOf("") }
+            val keyProvider = viewModel.aiProvider.collectAsState().value.provider
             FlowAlertDialog(
                 onDismissRequest = onDismiss,
-                title = { Text("${viewModel.aiProvider.collectAsState().value.provider.label} API key") },
+                title = { Text(stringResource(R.string.flow_ai_key_title_provider, keyProvider.label)) },
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(PresetSpacing)) {
-                        Text(stringResource(R.string.flow_ai_key_dialog_body), style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            stringResource(R.string.flow_ai_key_dialog_body, keyProvider.label, keyProvider.keySource),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
                         OutlinedTextField(
                             value = input,
                             onValueChange = { input = it },
@@ -239,7 +243,7 @@ internal fun IntegrationsDialogs(
             var input by rememberSaveable { mutableStateOf(geminiModel) }
             FlowAlertDialog(
                 onDismissRequest = onDismiss,
-                title = { Text("AI provider & model") },
+                title = { Text(stringResource(R.string.flow_ai_model_title)) },
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(PresetSpacing)) {
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(PresetSpacing)) {
@@ -272,6 +276,12 @@ internal fun IntegrationsDialogs(
                             label = { Text(stringResource(R.string.flow_ai_model_hint)) },
                             singleLine = true,
                         )
+                        if (provider.defaultModel.isNotBlank()) {
+                            Text(
+                                stringResource(R.string.flow_ai_model_dialog_body, provider.label, provider.defaultModel),
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
                         if (provider == AiProvider.OPENROUTER) {
                             OutlinedTextField(
                                 value = fallbacks,

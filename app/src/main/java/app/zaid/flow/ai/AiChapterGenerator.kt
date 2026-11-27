@@ -47,7 +47,7 @@ private val CHAPTER_PROMPT =
     """.trimIndent()
 
 /**
- * Makes chapters for a video that has none, from its captions, with the user's own Gemini key.
+ * Makes chapters for a video that has none, from its captions, with the user's own key for their chosen AI provider.
  *
  * The model is shown the captions as numbered lines and answers with line numbers, so every chapter
  * starts on a moment the captions really contain; each boundary is then checked against the wording

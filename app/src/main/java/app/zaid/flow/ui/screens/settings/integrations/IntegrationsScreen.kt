@@ -47,6 +47,7 @@ internal fun IntegrationsScreen(
     val aiEnabled by viewModel.aiEnabled.collectAsStateWithLifecycle()
     val geminiKey by viewModel.geminiKey.collectAsStateWithLifecycle()
     val geminiModel by viewModel.geminiModel.collectAsStateWithLifecycle()
+    val aiProvider by viewModel.aiProvider.collectAsStateWithLifecycle()
     val inspectorOn by viewModel.aiInspector.collectAsStateWithLifecycle()
     val inspectorKey by viewModel.inspectorKey.collectAsStateWithLifecycle()
     val giphyKey by viewModel.giphyKey.collectAsStateWithLifecycle()
@@ -78,6 +79,7 @@ internal fun IntegrationsScreen(
         aiSection(
             viewModel = viewModel,
             enabled = aiEnabled,
+            providerLabel = aiProvider.provider.label,
             hasKey = geminiKey.isNotBlank(),
             model = geminiModel,
             inspectorEnabled = inspectorOn,

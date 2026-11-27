@@ -25,15 +25,22 @@ enum class AiProvider(
     val label: String,
     val baseUrl: String,
     val defaultModel: String,
+    /** Where a user gets a key for this provider, shown in the key prompts; blank when it depends on the server. */
+    val keyUrl: String = "",
 ) {
-    GEMINI("Gemini", "", "gemini-2.5-flash"),
-    OPENROUTER("OpenRouter", "https://openrouter.ai/api/v1", "google/gemini-2.5-flash"),
-    OPENAI("OpenAI", "https://api.openai.com/v1", "gpt-4o-mini"),
-    GROQ("Groq", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile"),
-    DEEPSEEK("DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat"),
+    GEMINI("Gemini", "", "gemini-2.5-flash", "aistudio.google.com"),
+    OPENROUTER("OpenRouter", "https://openrouter.ai/api/v1", "google/gemini-2.5-flash", "openrouter.ai/keys"),
+    OPENAI("OpenAI", "https://api.openai.com/v1", "gpt-4o-mini", "platform.openai.com/api-keys"),
+    GROQ("Groq", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile", "console.groq.com/keys"),
+    DEEPSEEK("DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "platform.deepseek.com/api_keys"),
 
     /** Any OpenAI-compatible server (Ollama, LM Studio, vLLM, Together, Mistral, xAI, Azure, ...). */
     CUSTOM("Custom", "", ""),
+    ;
+
+    /** [keyUrl], or a plain description for a custom server. */
+    val keySource: String
+        get() = keyUrl.ifBlank { "your provider's dashboard" }
 }
 
 /**
@@ -55,7 +62,7 @@ data class AiProviderConfig(
 }
 
 /**
- * The user's own Gemini API key and model. The key is sealed with the Android Keystore before it is
+ * The user's AI provider, its API key and model (each provider keeps its own). The key is sealed with the Android Keystore before it is
  * written, the same way the proxy password and scrobbling secrets are.
  */
 @Singleton

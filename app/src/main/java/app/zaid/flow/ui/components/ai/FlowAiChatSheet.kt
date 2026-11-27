@@ -111,6 +111,7 @@ import app.zaid.flow.ai.AiChatState
 import app.zaid.flow.ai.AiMessage
 import app.zaid.flow.ai.AiPill
 import app.zaid.flow.ai.AiRole
+import app.zaid.flow.data.ai.AiProvider
 import app.zaid.flow.ai.FlowAiController
 import app.zaid.flow.ai.QUIZ_FINISH_PILL_ID
 import app.zaid.flow.ai.QUIZ_PILL_ID
@@ -235,7 +236,7 @@ private fun AiChatBody(
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             when {
                 !state.hasApiKey -> {
-                    MissingKey(onOpenSettings = {
+                    MissingKey(provider = state.provider, onOpenSettings = {
                         controller.closeSheet()
                         onOpenSettings()
                     })
@@ -336,7 +337,10 @@ private fun ChatHeader(
 }
 
 @Composable
-private fun MissingKey(onOpenSettings: () -> Unit) {
+private fun MissingKey(
+    provider: AiProvider,
+    onOpenSettings: () -> Unit,
+) {
     Column(
         modifier = Modifier.fillMaxSize().padding(32.dp),
         verticalArrangement = Arrangement.Center,
@@ -345,12 +349,12 @@ private fun MissingKey(onOpenSettings: () -> Unit) {
         FlowAiIcon(modifier = Modifier.size(56.dp))
         Spacer(Modifier.height(16.dp))
         Text(
-            text = stringResource(R.string.flow_ai_no_key_title),
+            text = stringResource(R.string.flow_ai_no_key_title, provider.label),
             style = MaterialTheme.typography.titleMedium,
         )
         Spacer(Modifier.height(8.dp))
         Text(
-            text = stringResource(R.string.flow_ai_no_key_body),
+            text = stringResource(R.string.flow_ai_no_key_body, provider.label, provider.keySource),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

@@ -7,10 +7,11 @@ import app.zaid.flow.ui.components.settings.switch
 import app.zaid.flow.ui.components.shared.FlowNavRow
 import app.zaid.flow.ui.screens.settings.index.IntegrationsIndex
 
-/** The Gemini key and model the Flow AI assistant runs on. */
+/** The provider, key and model the Flow AI assistant runs on. */
 internal fun SettingsListScope.aiSection(
     viewModel: IntegrationsViewModel,
     enabled: Boolean,
+    providerLabel: String,
     hasKey: Boolean,
     model: String,
     inspectorEnabled: Boolean,
@@ -34,7 +35,7 @@ internal fun SettingsListScope.aiSection(
         switch(IntegrationsIndex.aiChapters, viewModel.aiChapters, viewModel::setAiChapters, enabled = enabled)
         row(IntegrationsIndex.geminiKey.key) { shape ->
             FlowNavRow(
-                title = stringResource(IntegrationsIndex.geminiKey.title),
+                title = stringResource(R.string.flow_ai_key_title_provider, providerLabel),
                 supportingText = stringResource(if (hasKey) R.string.flow_ai_key_set else R.string.flow_ai_key_not_set),
                 enabled = enabled,
                 onClick = onEditKey,
@@ -43,7 +44,7 @@ internal fun SettingsListScope.aiSection(
         }
         row(IntegrationsIndex.geminiModel.key) { shape ->
             FlowNavRow(
-                title = stringResource(IntegrationsIndex.geminiModel.title),
+                title = stringResource(R.string.flow_ai_model_title_provider, providerLabel),
                 supportingText = model,
                 enabled = enabled,
                 onClick = onEditModel,

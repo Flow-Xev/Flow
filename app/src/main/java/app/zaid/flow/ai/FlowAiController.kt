@@ -1,5 +1,6 @@
 package app.zaid.flow.ai
 
+import app.zaid.flow.data.ai.AiProvider
 import app.zaid.flow.data.ai.GeminiClient
 import app.zaid.flow.data.ai.GeminiException
 import app.zaid.flow.data.ai.GeminiSettingsStore
@@ -57,6 +58,8 @@ data class AiChatState(
     /** What the assistant is doing right now, such as "Reading the transcript". */
     val activity: String? = null,
     val hasApiKey: Boolean = false,
+    /** The selected provider, so prompts and errors name the service the key belongs to. */
+    val provider: AiProvider = AiProvider.GEMINI,
     /** True while the chat is a quiz on the open video. */
     val quizActive: Boolean = false,
 )
@@ -160,6 +163,7 @@ class FlowAiController
 
         init {
             scope.launch { settings.apiKey.collect { key -> _state.update { it.copy(hasApiKey = key.isNotBlank()) } } }
+            scope.launch { settings.config.collect { config -> _state.update { it.copy(provider = config.provider) } } }
             // Follow the player: a different video means a different conversation.
             scope.launch { GlobalPlayerState.currentVideo.collect { switchTo(resolveKey()) } }
         }
@@ -438,7 +442,7 @@ class FlowAiController
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: GeminiException) {
-                        fail(conv, friendly(e))
+                        fail(conv, friendly(e, settings.currentConfig().provider.label))
                     } catch (e: Exception) {
                         fail(conv, e.message ?: "Something went wrong.")
                     } finally {
@@ -461,7 +465,7 @@ class FlowAiController
             }
             val apiKey = settings.currentApiKey()
             if (apiKey.isBlank()) {
-                fail(conv, "Add your Gemini API key in Settings > Integrations first.")
+                fail(conv, "Add your ${settings.currentConfig().provider.label} API key in Settings > Integrations first.")
                 return
             }
             val model = settings.currentModel()
@@ -576,14 +580,22 @@ class FlowAiController
             message: String,
         ) = append(conv, AiMessage(nextId++, AiRole.ASSISTANT, message, isError = true))
 
-        private fun friendly(e: GeminiException): String =
-            when (e.httpCode) {
-                400 -> "Gemini rejected the request: ${e.message}"
-                401, 403 -> "Gemini did not accept the API key. Check it in Settings > Integrations."
-                404 -> "That Gemini model was not found. Check the model name in Settings > Integrations."
-                429 -> "Gemini says you are over the rate limit. Try again in a moment."
-                else -> e.message ?: "Gemini could not be reached."
+        /** An error worded for the user, naming the provider [label] the request went to. */
+        private fun friendly(
+            e: GeminiException,
+            label: String,
+        ): String {
+            // Errors from OpenAI-style providers already start with the provider's name.
+            val detail = e.message.orEmpty().removePrefix("$label: ").trim()
+            return when (e.httpCode) {
+                400 -> "$label rejected the request: $detail"
+                401, 403 -> "$label did not accept the API key. Check it in Settings > Integrations."
+                402 -> "$label says the account has no credits left. $detail".trim()
+                404 -> "$label could not find that model or no provider serves it. Check the model name in Settings > Integrations."
+                429 -> "$label says you are over the rate limit. Try again in a moment."
+                else -> e.message?.takeIf { it.isNotBlank() } ?: "$label could not be reached."
             }
+        }
 
         private fun activityFor(tool: String): String =
             when (tool) {
