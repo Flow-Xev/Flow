@@ -216,11 +216,10 @@ class GeminiClient
                     val parts = (content["parts"] as? JsonArray).orEmpty()
                     if ((content["role"] as? JsonPrimitive)?.contentOrNull == "model") {
                         callIds =
-                            ArrayDeque(
-                                parts.mapNotNull { part ->
-                                    val call = (part as? JsonObject)?.get("functionCall") as? JsonObject ?: return@mapNotNull null
-                                    (call["id"] as? JsonPrimitive)?.contentOrNull
-                                },
+                            ArrayDeque<String?>(
+                                parts
+                                    .mapNotNull { (it as? JsonObject)?.get("functionCall") as? JsonObject }
+                                    .map { (it["id"] as? JsonPrimitive)?.contentOrNull },
                             )
                         return@map content
                     }
