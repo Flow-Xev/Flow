@@ -3,6 +3,8 @@ package app.zaid.flow.ui.screens.player
 import android.content.Context
 import android.net.Uri
 import android.util.Log
+import android.widget.Toast
+import app.zaid.flow.R
 import app.zaid.flow.ai.aiChapterGenerator
 import app.zaid.flow.data.local.PlayerPreferences
 import app.zaid.flow.data.local.ViewHistory
@@ -506,12 +508,36 @@ internal class PlaybackSessionApplier(
                     throw e
                 } catch (e: Exception) {
                     Log.w("AiChapters", "Could not make chapters for $videoId", e)
+                    if (isLoadCurrent(loadToken)) noteAiChaptersFailed(e)
                     emptyList()
                 }
             if (chapters.isEmpty() || !isLoadCurrent(loadToken)) return@launch
             uiState.update { current ->
                 if (current.chapters.isEmpty() && current.cachedVideo?.id == videoId) current.applyAiChapters(chapters) else current
             }
+        }
+    }
+
+    /**
+     * Tells the user, once in a while, that AI chapters could not be made and why (a refused key, a model the
+     * provider does not serve...). Rate-limited so a run of videos never turns into a run of toasts.
+     */
+    private suspend fun noteAiChaptersFailed(e: Exception) {
+        val now = System.currentTimeMillis()
+        synchronized(AiChapterNotice) {
+            if (now - AiChapterNotice.lastShownAt < AI_CHAPTER_NOTICE_INTERVAL_MS) return
+            AiChapterNotice.lastShownAt = now
+        }
+        val reason =
+            e.message
+                ?.lineSequence()
+                ?.firstOrNull()
+                ?.trim()
+                ?.take(160)
+                .orEmpty()
+                .ifBlank { e.javaClass.simpleName }
+        withContext(Dispatchers.Main) {
+            runCatching { Toast.makeText(context, context.getString(R.string.flow_ai_chapters_failed, reason), Toast.LENGTH_LONG).show() }
         }
     }
 
@@ -643,5 +669,11 @@ internal class PlaybackSessionApplier(
 
     private companion object {
         const val TAG = "PlaybackSessionApplier"
+        const val AI_CHAPTER_NOTICE_INTERVAL_MS = 10 * 60 * 1000L
     }
+}
+
+/** When the last AI chapters failure was shown; shared by every player session. */
+private object AiChapterNotice {
+    var lastShownAt = 0L
 }

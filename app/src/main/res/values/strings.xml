@@ -4526,6 +4526,7 @@
     <string name="flow_ai_music_access_title">Allow AI to read my music library</string>
     <string name="flow_ai_music_access_summary">Persistent opt-in for read-only song, artist and album lookup. Off by default; Android media permission is still required. Flow AI cannot edit or share files.</string>
     <string name="flow_ai_chapters_title">AI chapters</string>
+    <string name="flow_ai_chapters_failed">AI chapters unavailable: %1$s</string>
     <string name="flow_ai_chapters_summary">Add chapters to the seek bar of videos that have none, made from their captions. Sends those captions to Gemini.</string>
     <string name="chapters_ai_generated">AI-generated</string>
     <string name="flow_ai_key_title">Gemini API key</string>

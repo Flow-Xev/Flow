@@ -3,6 +3,7 @@ package app.zaid.flow.ai
 import android.content.Context
 import android.util.LruCache
 import app.zaid.flow.data.ai.GeminiClient
+import app.zaid.flow.data.ai.GeminiException
 import app.zaid.flow.data.ai.GeminiSettingsStore
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
@@ -69,7 +70,10 @@ class AiChapterGenerator
         // One video at a time: opening the same video twice must not ask the model twice.
         private val generating = Mutex()
 
-        /** Empty when the feature is off, the video is too short, it has no captions, or the reply was unusable. */
+        /**
+     * Empty when the feature is off, there is no key, the video is too short or it has no captions. Throws when
+     * the provider refused the request or its reply held no usable chapters, so the caller can say why.
+     */
         internal suspend fun chaptersFor(
             videoId: String,
             durationSeconds: Int,
@@ -109,6 +113,11 @@ class AiChapterGenerator
                             jsonOutput = true,
                         )
                     chapters = parseLineChapters(turn.text, lines, length, range)
+                }
+                if (chapters.isEmpty()) {
+                    // Remembered for this session so the video is not asked about again, but reported once.
+                    remember(videoId, chapters)
+                    throw GeminiException("${settings.currentConfig().provider.label}: the reply had no usable chapters")
                 }
                 // The Inspector, when it is on, reviews the draft before it is shown or kept.
                 if (chapters.isNotEmpty() && inspector.isReady()) {
