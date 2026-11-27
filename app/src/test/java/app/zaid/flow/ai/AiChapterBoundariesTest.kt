@@ -52,6 +52,15 @@ class AiChapterBoundariesTest {
     }
 
     @Test
+    fun wrappedFencedAndStringRepliesAreRead() {
+        val lines = buildChapterLines(talk(listOf("alpha", "bravo", "charlie")), 100_000)
+        val inObject = """{"chapters":[{"line":0,"title":"Alpha"},{"line":15,"title":"Bravo"},{"line":30,"title":"Charlie"}]}"""
+        val fenced = "```json\n" + """[{"line":"0","title":"Alpha"},{"line":"15","title":"Bravo"},{"line":"30","title":"Charlie"}]""" + "\n```"
+        assertEquals(listOf(0, 180, 360), parseLineChapters(inObject, lines, 540).map { it.startSeconds })
+        assertEquals(listOf(0, 180, 360), parseLineChapters(fenced, lines, 540).map { it.startSeconds })
+    }
+
+    @Test
     fun linesThatDoNotExistAreIgnoredAndTooFewGivesNone() {
         val lines = buildChapterLines(talk(listOf("alpha", "bravo", "charlie")), 100_000)
         assertTrue(parseLineChapters("""[{"line":0,"title":"A"},{"line":999,"title":"B"},{"line":30,"title":"C"}]""", lines, 540).isEmpty())

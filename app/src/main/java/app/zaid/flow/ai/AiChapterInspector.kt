@@ -17,7 +17,7 @@ private val INSPECTOR_PROMPT =
     """
     You are the Inspector: a strict second reviewer of chapters that another AI made for a video's seek bar. The transcript is numbered lines: "[line number] mm:ss what is said". The draft chapters are given as [{"line": n, "title": "..."}].
 
-    Check every chapter against the transcript, then reply with ONLY the final, corrected JSON array in the same shape, no markdown and no commentary: [{"line": <line number>, "title": "<title>"}, ...]
+    Check every chapter against the transcript, then reply with ONLY one JSON object holding the final, corrected chapters, with no markdown, no code fence and no commentary: {"chapters": [{"line": <integer line number>, "title": "<title>"}, ...]}
 
     Fix these problems, and change nothing that is already good:
     - Boundary: a chapter must begin on the line where the speaker FIRST opens the new topic. Move it if it sits mid-topic or a line too early or late. Line numbers must exist, be increasing, and the first chapter uses line 0.

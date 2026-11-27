@@ -25,7 +25,10 @@ private val CHAPTER_PROMPT =
     """
     You split a video's transcript into chapters for its seek bar. The transcript is numbered lines: "[line number] mm:ss what is said" (or "h:mm:ss").
 
-    Reply with ONLY a JSON array, no markdown and no commentary: [{"line": <line number where the chapter begins>, "title": "<chapter title>"}, ...]
+    Output format (strict):
+    - Reply with ONLY one JSON object and nothing else: no markdown, no code fence, no commentary before or after it.
+    - Exactly this shape: {"chapters": [{"line": <integer line number where the chapter begins>, "title": "<chapter title>"}, ...]}
+    - "line" is a plain integer, never a string or a time. Every title is a plain string. No other keys.
 
     Choosing where a chapter begins:
     - A chapter begins on the line where the speaker FIRST starts the new topic: the sentence that opens it, announces it ("now let's talk about...", "next...") or turns to it. Not a line in the middle of the topic, and not the line before it.

@@ -4,6 +4,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -136,7 +137,6 @@ class GeminiClient
                 parse(raw)
             }
 
-
         // ── OpenAI-compatible providers (OpenRouter, OpenAI, Groq, DeepSeek, custom) ─────────────
         // The app keeps one history format (Gemini's). It is translated to chat-completions messages
         // here and the answer is translated back, so nothing else in the app knows the provider.
@@ -156,70 +156,112 @@ class GeminiClient
                 val root = config.endpointRoot
                 if (root.isBlank()) throw GeminiException("Set the base URL of your custom provider in Settings > Integrations.")
                 if (model.isBlank()) throw GeminiException("Set a model name for $label in Settings > Integrations.")
-                val openRouter = config.provider == AiProvider.OPENROUTER
-                val fallbacks = if (openRouter) config.fallbacks.split(',').map { it.trim() }.filter { it.isNotEmpty() } else emptyList()
-                val primary = model.trim().let { if (openRouter && config.webSearch && !it.endsWith(":online")) "$it:online" else it }
                 val hasTools = functionDeclarations.isNotEmpty()
-                val body =
-                    buildJsonObject {
-                        if (fallbacks.isEmpty()) {
-                            put("model", primary)
-                        } else {
-                            putJsonArray("models") { (listOf(primary) + fallbacks).forEach { add(JsonPrimitive(it)) } }
-                        }
-                        put("temperature", temperature)
-                        put("messages", toOpenAiMessages(systemInstruction, contents, cacheSystem = openRouter))
-                        if (hasTools) {
-                            putJsonArray("tools") {
-                                functionDeclarations.forEach { decl ->
-                                    add(
-                                        buildJsonObject {
-                                            put("type", "function")
-                                            put("function", decl)
-                                        },
-                                    )
-                                }
+                // JSON mode is a hint, not a requirement: many models and providers reject response_format, so
+                // a request that fails because of it is sent once more without it and the reply is parsed leniently.
+                val wantJsonMode = jsonOutput && !hasTools && config.provider != AiProvider.CUSTOM
+                try {
+                    requestOpenAi(config, apiKey, model, systemInstruction, contents, functionDeclarations, temperature, wantJsonMode)
+                } catch (e: GeminiException) {
+                    if (wantJsonMode && isUnsupportedParameter(e)) {
+                        requestOpenAi(config, apiKey, model, systemInstruction, contents, functionDeclarations, temperature, false)
+                    } else {
+                        throw e
+                    }
+                }
+            }
+
+        private fun requestOpenAi(
+            config: AiProviderConfig,
+            apiKey: String,
+            model: String,
+            systemInstruction: String,
+            contents: JsonArray,
+            functionDeclarations: JsonArray,
+            temperature: Double,
+            jsonMode: Boolean,
+        ): GeminiTurn {
+            val label = config.provider.label
+            val root = config.endpointRoot
+            val openRouter = config.provider == AiProvider.OPENROUTER
+            val fallbacks = if (openRouter) config.fallbacks.split(',').map { it.trim() }.filter { it.isNotEmpty() } else emptyList()
+            val primary = model.trim()
+            val hasTools = functionDeclarations.isNotEmpty()
+            // Prompt caching breakpoints are an Anthropic feature; other providers may reject the array form.
+            val cacheSystem = openRouter && primary.startsWith("anthropic/")
+            val body =
+                buildJsonObject {
+                    if (fallbacks.isEmpty()) {
+                        put("model", primary)
+                    } else {
+                        putJsonArray("models") { (listOf(primary) + fallbacks).forEach { add(JsonPrimitive(it)) } }
+                    }
+                    put("temperature", temperature)
+                    put("messages", toOpenAiMessages(systemInstruction, contents, cacheSystem = cacheSystem))
+                    if (hasTools) {
+                        putJsonArray("tools") {
+                            functionDeclarations.forEach { decl ->
+                                add(
+                                    buildJsonObject {
+                                        put("type", "function")
+                                        put("function", decl)
+                                    },
+                                )
                             }
-                            put("tool_choice", "auto")
-                        } else if (jsonOutput && config.provider != AiProvider.CUSTOM) {
-                            putJsonObject("response_format") { put("type", "json_object") }
                         }
-                        if (openRouter) {
-                            // Only route to providers that really support tools/JSON, optionally to ones that keep no data.
+                        put("tool_choice", "auto")
+                    } else if (jsonMode) {
+                        putJsonObject("response_format") { put("type", "json_object") }
+                    }
+                    if (openRouter) {
+                        // require_parameters only for tool calls: a chat that needs tools must land on a provider that
+                        // runs them. For plain or JSON answers it would rule out most providers ("no endpoints").
+                        if (hasTools || config.noDataStorage) {
                             putJsonObject("provider") {
-                                put("require_parameters", true)
+                                if (hasTools) put("require_parameters", true)
                                 if (config.noDataStorage) put("data_collection", "deny")
                             }
-                            // Long transcripts are compressed to fit the model's window instead of failing.
-                            putJsonArray("transforms") { add(JsonPrimitive("middle-out")) }
                         }
+                        // Long transcripts are compressed to fit the model's window instead of failing.
+                        putJsonArray("transforms") { add(JsonPrimitive("middle-out")) }
                     }
-                val request =
-                    Request
-                        .Builder()
-                        .url("$root/chat/completions")
-                        .apply {
-                            if (apiKey.isNotBlank()) header("Authorization", "Bearer $apiKey")
-                            if (openRouter) header("X-Title", "Flow")
-                        }.post(body.toString().toRequestBody(JSON_MEDIA_TYPE))
-                        .build()
-                val raw =
-                    try {
-                        client.newCall(request).execute().use { response ->
-                            val text = response.body?.string().orEmpty()
-                            if (!response.isSuccessful) {
-                                // httpCode 0 keeps the controller from blaming Gemini; the text names the provider.
-                                throw GeminiException("$label: ${apiError(text) ?: "request failed (HTTP ${response.code})"}", 0)
-                            }
-                            text
+                }
+            val request =
+                Request
+                    .Builder()
+                    .url("$root/chat/completions")
+                    .apply {
+                        if (apiKey.isNotBlank()) header("Authorization", "Bearer $apiKey")
+                        if (openRouter) {
+                            header("X-Title", "Flow")
+                            header("HTTP-Referer", "https://github.com/Flow-Xev/Flow")
                         }
-                    } catch (e: GeminiException) {
-                        throw e
-                    } catch (e: IOException) {
-                        throw GeminiException("$label: ${e.message ?: "Network error"}", 0)
+                    }.post(body.toString().toRequestBody(JSON_MEDIA_TYPE))
+                    .build()
+            val raw =
+                try {
+                    client.newCall(request).execute().use { response ->
+                        val text = response.body?.string().orEmpty()
+                        if (!response.isSuccessful) {
+                            throw GeminiException("$label: ${apiError(text) ?: "request failed (HTTP ${response.code})"}", response.code)
+                        }
+                        text
                     }
-                parseOpenAi(raw, label)
-            }
+                } catch (e: GeminiException) {
+                    throw e
+                } catch (e: IOException) {
+                    throw GeminiException("$label could not be reached: ${e.message ?: "network error"}", 0)
+                }
+            return parseOpenAi(raw, label)
+        }
+
+        /** True when a failure looks like the provider or model refusing a request option, not a bad key or quota. */
+        private fun isUnsupportedParameter(e: GeminiException): Boolean {
+            if (e.httpCode == 400 || e.httpCode == 404 || e.httpCode == 422) return true
+            val text = e.message.orEmpty().lowercase()
+            return "response_format" in text || "json" in text || "unsupported" in text || "not supported" in text ||
+                "no endpoints" in text
+        }
 
         private fun toOpenAiMessages(
             system: String,
@@ -295,7 +337,12 @@ class GeminiClient
                         }
                         val text = parts.mapNotNull { it["text"]?.jsonPrimitive?.contentOrNull }.joinToString("")
                         if (text.isNotEmpty()) {
-                            add(buildJsonObject { put("role", "user"); put("content", text) })
+                            add(
+                                buildJsonObject {
+                                    put("role", "user")
+                                    put("content", text)
+                                },
+                            )
                         }
                     }
                 }
@@ -305,11 +352,15 @@ class GeminiClient
             raw: String,
             label: String,
         ): GeminiTurn {
-            val root = json.parseToJsonElement(raw).jsonObject
+            val root =
+                runCatching { json.parseToJsonElement(raw).jsonObject }.getOrNull()
+                    ?: throw GeminiException("$label: the answer could not be read")
+            // OpenRouter can answer 200 with an error object when the upstream provider failed mid-request.
+            apiError(raw)?.let { throw GeminiException("$label: $it", errorCode(root)) }
             val message =
                 root["choices"]?.jsonArray?.firstOrNull()?.jsonObject?.get("message") as? JsonObject
-                    ?: throw GeminiException("$label: ${apiError(raw) ?: "no answer returned"}")
-            val text = (message["content"] as? JsonPrimitive)?.contentOrNull.orEmpty().trim()
+                    ?: throw GeminiException("$label: no answer returned")
+            val text = contentText(message["content"]).trim()
             val calls =
                 message["tool_calls"]?.jsonArray.orEmpty().mapNotNull { element ->
                     val fn = element.jsonObject["function"]?.jsonObject ?: return@mapNotNull null
@@ -340,6 +391,24 @@ class GeminiClient
             return GeminiTurn(replay, text, calls)
         }
 
+        /** Message content is a string for most providers, but some send an array of typed parts. */
+        private fun contentText(content: JsonElement?): String =
+            when (content) {
+                is JsonPrimitive -> content.contentOrNull.orEmpty()
+                is JsonArray ->
+                    content.joinToString("") { part ->
+                        when (part) {
+                            is JsonPrimitive -> part.contentOrNull.orEmpty()
+                            is JsonObject -> (part["text"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+                            else -> ""
+                        }
+                    }
+                else -> ""
+            }
+
+        private fun errorCode(root: JsonObject): Int =
+            ((root["error"] as? JsonObject)?.get("code") as? JsonPrimitive)?.contentOrNull?.toIntOrNull() ?: 0
+
         private fun errorMessage(
             body: String,
             code: Int,
@@ -348,13 +417,12 @@ class GeminiClient
         private fun apiError(body: String): String? {
             val apiMessage =
                 runCatching {
-                    json
-                        .parseToJsonElement(body)
-                        .jsonObject["error"]
-                        ?.jsonObject
-                        ?.get("message")
-                        ?.jsonPrimitive
-                        ?.contentOrNull
+                    val error = json.parseToJsonElement(body).jsonObject["error"]
+                    when (error) {
+                        is JsonObject -> (error["message"] as? JsonPrimitive)?.contentOrNull
+                        is JsonPrimitive -> error.contentOrNull
+                        else -> null
+                    }
                 }.getOrNull()
             return apiMessage?.takeIf { it.isNotBlank() }
         }

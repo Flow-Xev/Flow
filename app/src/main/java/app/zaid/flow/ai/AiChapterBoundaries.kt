@@ -2,11 +2,13 @@ package app.zaid.flow.ai
 
 import app.zaid.flow.data.transcript.TranscriptCue
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonPrimitive
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.floor
@@ -110,19 +112,17 @@ internal fun parseLineChapters(
     allowed: IntRange = chapterCountRange(durationSeconds),
 ): List<AiChapter> {
     if (lines.isEmpty()) return emptyList()
-    val open = reply.indexOf('[')
-    val close = reply.lastIndexOf(']')
-    if (open < 0 || close <= open) return emptyList()
-    val items =
-        runCatching { Json.parseToJsonElement(reply.substring(open, close + 1)).jsonArray }.getOrNull()
-            ?: return emptyList()
+    val items = chapterArray(reply) ?: return emptyList()
     val proposed =
         items
             .mapNotNull { element ->
                 runCatching {
                     val obj = element as JsonObject
-                    val line = obj["line"]?.jsonPrimitive?.doubleOrNull?.toInt() ?: return@runCatching null
-                    val title = cleanChapterTitle(obj["title"]?.jsonPrimitive?.contentOrNull.orEmpty())
+                    val line = LINE_KEYS.firstNotNullOfOrNull { lineNumber(obj[it]) } ?: return@runCatching null
+                    val title =
+                        cleanChapterTitle(
+                            TITLE_KEYS.firstNotNullOfOrNull { (obj[it] as? JsonPrimitive)?.contentOrNull }.orEmpty(),
+                        )
                     if (title.isEmpty() || line !in lines.indices) null else line to title
                 }.getOrNull()
             }.sortedBy { it.first }
@@ -140,6 +140,50 @@ internal fun parseLineChapters(
 }
 
 private const val MIN_CHAPTER_COUNT = 3
+
+private val LINE_KEYS = listOf("line", "line_number", "lineNumber", "index")
+private val TITLE_KEYS = listOf("title", "name", "chapter")
+
+/** A line number sent as a number or, by some models, as a string such as "12" or "[12]". */
+private fun lineNumber(value: JsonElement?): Int? {
+    val primitive = value as? JsonPrimitive ?: return null
+    primitive.doubleOrNull?.let { return it.toInt() }
+    return primitive.contentOrNull
+        ?.trim()
+        ?.trim('[', ']')
+        ?.toDoubleOrNull()
+        ?.toInt()
+}
+
+/**
+ * Finds the chapter list in a model reply, whatever wrapping it came in: a bare array, an array inside
+ * a ```json fence, or an object such as {"chapters": [...]} (what JSON mode on OpenAI-style APIs forces).
+ */
+internal fun chapterArray(reply: String): JsonArray? {
+    val text = stripCodeFence(reply)
+    val whole = runCatching { Json.parseToJsonElement(text) }.getOrNull()
+    when (whole) {
+        is JsonArray -> return whole
+        is JsonObject -> {
+            (whole["chapters"] as? JsonArray)?.let { return it }
+            whole.values.firstOrNull { it is JsonArray }?.let { return it as JsonArray }
+        }
+        else -> Unit
+    }
+    val open = text.indexOf('[')
+    val close = text.lastIndexOf(']')
+    if (open < 0 || close <= open) return null
+    return runCatching { Json.parseToJsonElement(text.substring(open, close + 1)).jsonArray }.getOrNull()
+}
+
+/** Drops a surrounding markdown code fence (```json ... ```), which many models add despite being told not to. */
+internal fun stripCodeFence(reply: String): String {
+    val trimmed = reply.trim()
+    if (!trimmed.startsWith("```")) return trimmed
+    val body = trimmed.substringAfter('\n', "")
+    val end = body.lastIndexOf("```")
+    return (if (end >= 0) body.substring(0, end) else body).trim()
+}
 
 private fun dropCrowded(
     chapters: List<AiChapter>,
