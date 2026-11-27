@@ -31,10 +31,10 @@ class AccountSync
         private val likedVideos: LikedVideosRepository,
         private val musicSync: MusicAccountSync,
     ) {
-        suspend fun syncOnLogin() =
+        suspend fun syncOnLogin(fullImport: Boolean = true) =
             withContext(Dispatchers.IO) {
                 if (!accountFeed.isActive) return@withContext
-                attempt("history") { importHistory() }
+                attempt("history") { importHistory(if (fullImport) MAX_PAGES else REFRESH_PAGES) }
                 attempt("liked videos") { importLikes() }
                 // The music library is read from music.youtube.com with a web session; the TV client has no such page.
                 if (!accountFeed.isTv) attempt("music library") { musicSync.sync() }
@@ -53,11 +53,11 @@ class AccountSync
             }
         }
 
-        private suspend fun importHistory() {
+        private suspend fun importHistory(maxPages: Int) {
             val now = System.currentTimeMillis()
             val percents = HashMap<String, Int>()
             val entries =
-                collect(accountFeed::history, percents).mapIndexed { index, video ->
+                collect(accountFeed::history, percents, maxPages).mapIndexed { index, video ->
                     // Where the page showed a progress bar the video resumes there; anything without one
                     // was watched through, so it is saved as finished (a bare "watched" mark when the
                     // page gave no length).
@@ -106,6 +106,7 @@ class AccountSync
         private suspend fun collect(
             page: suspend (String?) -> AccountPage?,
             percents: MutableMap<String, Int>? = null,
+            maxPages: Int = MAX_PAGES,
         ) = buildList {
                 var token: String? = null
                 var pages = 0
@@ -115,12 +116,15 @@ class AccountSync
                     addAll(result.videos)
                     token = result.continuation
                     pages++
-                } while (token != null && pages < MAX_PAGES)
+                } while (token != null && pages < maxPages)
             }.distinctBy { it.id }
 
         private companion object {
             const val TAG = "AccountSync"
             const val MAX_PAGES = 200
+
+            /** A routine refresh reads only the newest pages of history, not all of it. */
+            const val REFRESH_PAGES = 4
             const val FINISHED_PERCENT = 95
             const val ORDER_STEP_MS = 60_000L
         }
