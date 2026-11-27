@@ -4,7 +4,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -56,6 +58,7 @@ class GeminiClient
     @Inject
     constructor(
         baseClient: OkHttpClient,
+        private val settings: GeminiSettingsStore,
     ) {
         private val client: OkHttpClient =
             baseClient
@@ -75,6 +78,23 @@ class GeminiClient
             functionDeclarations: JsonArray,
             temperature: Double = DEFAULT_TEMPERATURE,
             jsonOutput: Boolean = false,
+        ): GeminiTurn {
+            val config = settings.currentConfig()
+            return if (config.provider == AiProvider.GEMINI) {
+                generateGemini(apiKey, model, systemInstruction, contents, functionDeclarations, temperature, jsonOutput)
+            } else {
+                generateOpenAi(config, apiKey, model, systemInstruction, contents, functionDeclarations, temperature, jsonOutput)
+            }
+        }
+
+        private suspend fun generateGemini(
+            apiKey: String,
+            model: String,
+            systemInstruction: String,
+            contents: JsonArray,
+            functionDeclarations: JsonArray,
+            temperature: Double,
+            jsonOutput: Boolean,
         ): GeminiTurn =
             withContext(Dispatchers.IO) {
                 val body =
@@ -116,10 +136,216 @@ class GeminiClient
                 parse(raw)
             }
 
+
+        // ── OpenAI-compatible providers (OpenRouter, OpenAI, Groq, DeepSeek, custom) ─────────────
+        // The app keeps one history format (Gemini's). It is translated to chat-completions messages
+        // here and the answer is translated back, so nothing else in the app knows the provider.
+
+        private suspend fun generateOpenAi(
+            config: AiProviderConfig,
+            apiKey: String,
+            model: String,
+            systemInstruction: String,
+            contents: JsonArray,
+            functionDeclarations: JsonArray,
+            temperature: Double,
+            jsonOutput: Boolean,
+        ): GeminiTurn =
+            withContext(Dispatchers.IO) {
+                val label = config.provider.label
+                val root = config.endpointRoot
+                if (root.isBlank()) throw GeminiException("Set the base URL of your custom provider in Settings > Integrations.")
+                if (model.isBlank()) throw GeminiException("Set a model name for $label in Settings > Integrations.")
+                val openRouter = config.provider == AiProvider.OPENROUTER
+                val fallbacks = if (openRouter) config.fallbacks.split(',').map { it.trim() }.filter { it.isNotEmpty() } else emptyList()
+                val primary = model.trim().let { if (openRouter && config.webSearch && !it.endsWith(":online")) "$it:online" else it }
+                val hasTools = functionDeclarations.isNotEmpty()
+                val body =
+                    buildJsonObject {
+                        if (fallbacks.isEmpty()) {
+                            put("model", primary)
+                        } else {
+                            putJsonArray("models") { (listOf(primary) + fallbacks).forEach { add(JsonPrimitive(it)) } }
+                        }
+                        put("temperature", temperature)
+                        put("messages", toOpenAiMessages(systemInstruction, contents, cacheSystem = openRouter))
+                        if (hasTools) {
+                            putJsonArray("tools") {
+                                functionDeclarations.forEach { decl ->
+                                    add(
+                                        buildJsonObject {
+                                            put("type", "function")
+                                            put("function", decl)
+                                        },
+                                    )
+                                }
+                            }
+                            put("tool_choice", "auto")
+                        } else if (jsonOutput && config.provider != AiProvider.CUSTOM) {
+                            putJsonObject("response_format") { put("type", "json_object") }
+                        }
+                        if (openRouter) {
+                            // Only route to providers that really support tools/JSON, optionally to ones that keep no data.
+                            putJsonObject("provider") {
+                                put("require_parameters", true)
+                                if (config.noDataStorage) put("data_collection", "deny")
+                            }
+                            // Long transcripts are compressed to fit the model's window instead of failing.
+                            putJsonArray("transforms") { add(JsonPrimitive("middle-out")) }
+                        }
+                    }
+                val request =
+                    Request
+                        .Builder()
+                        .url("$root/chat/completions")
+                        .apply {
+                            if (apiKey.isNotBlank()) header("Authorization", "Bearer $apiKey")
+                            if (openRouter) header("X-Title", "Flow")
+                        }.post(body.toString().toRequestBody(JSON_MEDIA_TYPE))
+                        .build()
+                val raw =
+                    try {
+                        client.newCall(request).execute().use { response ->
+                            val text = response.body?.string().orEmpty()
+                            if (!response.isSuccessful) {
+                                // httpCode 0 keeps the controller from blaming Gemini; the text names the provider.
+                                throw GeminiException("$label: ${apiError(text) ?: "request failed (HTTP ${response.code})"}", 0)
+                            }
+                            text
+                        }
+                    } catch (e: GeminiException) {
+                        throw e
+                    } catch (e: IOException) {
+                        throw GeminiException("$label: ${e.message ?: "Network error"}", 0)
+                    }
+                parseOpenAi(raw, label)
+            }
+
+        private fun toOpenAiMessages(
+            system: String,
+            contents: JsonArray,
+            cacheSystem: Boolean,
+        ): JsonArray =
+            buildJsonArray {
+                add(
+                    buildJsonObject {
+                        put("role", "system")
+                        if (cacheSystem) {
+                            // OpenRouter prompt caching: honoured by models that support it, ignored by the rest.
+                            putJsonArray("content") {
+                                add(
+                                    buildJsonObject {
+                                        put("type", "text")
+                                        put("text", system)
+                                        putJsonObject("cache_control") { put("type", "ephemeral") }
+                                    },
+                                )
+                            }
+                        } else {
+                            put("content", system)
+                        }
+                    },
+                )
+                var pendingIds = ArrayDeque<String>()
+                contents.forEachIndexed { index, element ->
+                    val content = element.jsonObject
+                    val parts = content["parts"]?.jsonArray.orEmpty().map { it.jsonObject }
+                    if (content["role"]?.jsonPrimitive?.contentOrNull == "model") {
+                        val text =
+                            parts
+                                .filter { it["thought"]?.jsonPrimitive?.contentOrNull != "true" }
+                                .mapNotNull { it["text"]?.jsonPrimitive?.contentOrNull }
+                                .joinToString("")
+                        val calls = parts.mapNotNull { it["functionCall"]?.jsonObject }
+                        pendingIds = ArrayDeque()
+                        add(
+                            buildJsonObject {
+                                put("role", "assistant")
+                                if (text.isNotEmpty() || calls.isEmpty()) put("content", text) else put("content", JsonNull)
+                                if (calls.isNotEmpty()) {
+                                    putJsonArray("tool_calls") {
+                                        calls.forEachIndexed { i, call ->
+                                            val id = "call_${index}_$i"
+                                            pendingIds.addLast(id)
+                                            add(
+                                                buildJsonObject {
+                                                    put("id", id)
+                                                    put("type", "function")
+                                                    putJsonObject("function") {
+                                                        put("name", call["name"]?.jsonPrimitive?.contentOrNull.orEmpty())
+                                                        put("arguments", (call["args"] ?: JsonObject(emptyMap())).toString())
+                                                    }
+                                                },
+                                            )
+                                        }
+                                    }
+                                }
+                            },
+                        )
+                    } else {
+                        val responses = parts.mapNotNull { it["functionResponse"]?.jsonObject }
+                        responses.forEach { r ->
+                            add(
+                                buildJsonObject {
+                                    put("role", "tool")
+                                    put("tool_call_id", pendingIds.removeFirstOrNull() ?: "call_${index}_x")
+                                    put("content", (r["response"] ?: JsonObject(emptyMap())).toString())
+                                },
+                            )
+                        }
+                        val text = parts.mapNotNull { it["text"]?.jsonPrimitive?.contentOrNull }.joinToString("")
+                        if (text.isNotEmpty()) {
+                            add(buildJsonObject { put("role", "user"); put("content", text) })
+                        }
+                    }
+                }
+            }
+
+        private fun parseOpenAi(
+            raw: String,
+            label: String,
+        ): GeminiTurn {
+            val root = json.parseToJsonElement(raw).jsonObject
+            val message =
+                root["choices"]?.jsonArray?.firstOrNull()?.jsonObject?.get("message") as? JsonObject
+                    ?: throw GeminiException("$label: ${apiError(raw) ?: "no answer returned"}")
+            val text = (message["content"] as? JsonPrimitive)?.contentOrNull.orEmpty().trim()
+            val calls =
+                message["tool_calls"]?.jsonArray.orEmpty().mapNotNull { element ->
+                    val fn = element.jsonObject["function"]?.jsonObject ?: return@mapNotNull null
+                    val name = fn["name"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                    val args =
+                        runCatching { json.parseToJsonElement(fn["arguments"]?.jsonPrimitive?.contentOrNull.orEmpty().ifBlank { "{}" }) }
+                            .getOrNull() as? JsonObject ?: JsonObject(emptyMap())
+                    GeminiFunctionCall(name, args)
+                }
+            val replay =
+                buildJsonObject {
+                    put("role", "model")
+                    putJsonArray("parts") {
+                        if (text.isNotEmpty()) add(buildJsonObject { put("text", text) })
+                        calls.forEach { c ->
+                            add(
+                                buildJsonObject {
+                                    putJsonObject("functionCall") {
+                                        put("name", c.name)
+                                        put("args", c.args)
+                                    }
+                                },
+                            )
+                        }
+                        if (text.isEmpty() && calls.isEmpty()) add(buildJsonObject { put("text", "") })
+                    }
+                }
+            return GeminiTurn(replay, text, calls)
+        }
+
         private fun errorMessage(
             body: String,
             code: Int,
-        ): String {
+        ): String = apiError(body) ?: "Gemini request failed (HTTP $code)"
+
+        private fun apiError(body: String): String? {
             val apiMessage =
                 runCatching {
                     json
@@ -130,7 +356,7 @@ class GeminiClient
                         ?.jsonPrimitive
                         ?.contentOrNull
                 }.getOrNull()
-            return apiMessage?.takeIf { it.isNotBlank() } ?: "Gemini request failed (HTTP $code)"
+            return apiMessage?.takeIf { it.isNotBlank() }
         }
 
         private fun parse(raw: String): GeminiTurn {

@@ -1,6 +1,7 @@
 package app.zaid.flow.data.ai
 
 import android.content.Context
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -19,6 +20,40 @@ import javax.inject.Singleton
 
 private val Context.aiDataStore by safePreferencesDataStore(name = "ai_assistant")
 
+/** Where Flow AI sends its requests. Everything except [GEMINI] speaks the OpenAI chat-completions protocol. */
+enum class AiProvider(
+    val label: String,
+    val baseUrl: String,
+    val defaultModel: String,
+) {
+    GEMINI("Gemini", "", "gemini-2.5-flash"),
+    OPENROUTER("OpenRouter", "https://openrouter.ai/api/v1", "google/gemini-2.5-flash"),
+    OPENAI("OpenAI", "https://api.openai.com/v1", "gpt-4o-mini"),
+    GROQ("Groq", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile"),
+    DEEPSEEK("DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat"),
+
+    /** Any OpenAI-compatible server (Ollama, LM Studio, vLLM, Together, Mistral, xAI, Azure, ...). */
+    CUSTOM("Custom", "", ""),
+}
+
+/**
+ * The chosen provider plus its options. [baseUrl] only matters for [AiProvider.CUSTOM]; the rest are
+ * OpenRouter-only: [webSearch] (online models), [noDataStorage] (only providers that do not store or
+ * train on prompts) and [fallbacks] (comma-separated model ids tried when the main model fails).
+ */
+data class AiProviderConfig(
+    val provider: AiProvider = AiProvider.GEMINI,
+    val baseUrl: String = "",
+    val webSearch: Boolean = false,
+    val noDataStorage: Boolean = false,
+    val fallbacks: String = "",
+) {
+    /** The chat-completions root for OpenAI-style providers, without a trailing slash. */
+    val endpointRoot: String
+        get() = (if (provider == AiProvider.CUSTOM) baseUrl else provider.baseUrl)
+            .trim().trimEnd('/').removeSuffix("/chat/completions")
+}
+
 /**
  * The user's own Gemini API key and model. The key is sealed with the Android Keystore before it is
  * written, the same way the proxy password and scrobbling secrets are.
@@ -29,8 +64,30 @@ class GeminiSettingsStore
     constructor(
         @ApplicationContext private val context: Context,
     ) {
-        private val apiKeyKey = stringPreferencesKey("gemini_api_key")
-        private val modelKey = stringPreferencesKey("gemini_model")
+        private val providerKey = stringPreferencesKey("ai_provider")
+        private val baseUrlKey = stringPreferencesKey("ai_base_url")
+        private val webSearchKey = booleanPreferencesKey("ai_or_web_search")
+        private val noStorageKey = booleanPreferencesKey("ai_or_no_storage")
+        private val fallbacksKey = stringPreferencesKey("ai_or_fallbacks")
+
+        // Gemini keeps its original names so existing installs keep their key and model.
+        private fun apiKeyKeyFor(p: AiProvider) =
+            stringPreferencesKey(if (p == AiProvider.GEMINI) "gemini_api_key" else "api_key_${p.name.lowercase()}")
+
+        private fun modelKeyFor(p: AiProvider) =
+            stringPreferencesKey(if (p == AiProvider.GEMINI) "gemini_model" else "model_${p.name.lowercase()}")
+
+        private fun providerOf(p: Preferences): AiProvider =
+            AiProvider.entries.firstOrNull { it.name == p[providerKey] } ?: AiProvider.GEMINI
+
+        private fun configOf(p: Preferences) =
+            AiProviderConfig(
+                providerOf(p),
+                p[baseUrlKey].orEmpty(),
+                p[webSearchKey] ?: false,
+                p[noStorageKey] ?: false,
+                p[fallbacksKey].orEmpty(),
+            )
         private val enabledKey = booleanPreferencesKey("ai_enabled")
         private val chaptersKey = booleanPreferencesKey("ai_chapters_enabled")
         private val inspectorEnabledKey = booleanPreferencesKey("ai_inspector_enabled")
@@ -74,15 +131,25 @@ class GeminiSettingsStore
             context.aiDataStore.edit { it[localMusicAccessKey] = value }
         }
 
+        val config: Flow<AiProviderConfig> =
+            context.aiDataStore.data.map { configOf(it) }.distinctUntilChanged()
+
+        suspend fun currentConfig(): AiProviderConfig = config.first()
+
+        /** The key of the selected provider; each provider keeps its own. */
         val apiKey: Flow<String> =
             context.aiDataStore.data
-                .map { KeystoreSecretBox.open(it[apiKeyKey]) }
+                .map { KeystoreSecretBox.open(it[apiKeyKeyFor(providerOf(it))]) }
                 .flowOn(Dispatchers.IO)
                 .distinctUntilChanged()
 
+        /** The model of the selected provider; each provider keeps its own. */
         val model: Flow<String> =
             context.aiDataStore.data
-                .map { it[modelKey]?.takeIf(String::isNotBlank) ?: DEFAULT_MODEL }
+                .map { prefs ->
+                    val provider = providerOf(prefs)
+                    prefs[modelKeyFor(provider)]?.takeIf(String::isNotBlank) ?: provider.defaultModel
+                }
                 .distinctUntilChanged()
 
         suspend fun currentApiKey(): String = apiKey.first()
@@ -93,14 +160,32 @@ class GeminiSettingsStore
             val trimmed = value.trim()
             val sealed = if (trimmed.isEmpty()) "" else withContext(Dispatchers.IO) { KeystoreSecretBox.seal(trimmed) }
             context.aiDataStore.edit { preferences ->
-                if (sealed.isEmpty()) preferences.remove(apiKeyKey) else preferences[apiKeyKey] = sealed
+                val key = apiKeyKeyFor(providerOf(preferences))
+                if (sealed.isEmpty()) preferences.remove(key) else preferences[key] = sealed
             }
         }
 
         suspend fun setModel(value: String) {
             val trimmed = value.trim()
             context.aiDataStore.edit { preferences ->
-                if (trimmed.isEmpty()) preferences.remove(modelKey) else preferences[modelKey] = trimmed
+                val key = modelKeyFor(providerOf(preferences))
+                if (trimmed.isEmpty()) preferences.remove(key) else preferences[key] = trimmed
+            }
+        }
+
+        /** Saves the provider, its options and that provider's model in one write. */
+        suspend fun setProvider(
+            value: AiProviderConfig,
+            model: String,
+        ) {
+            context.aiDataStore.edit { preferences ->
+                preferences[providerKey] = value.provider.name
+                preferences[baseUrlKey] = value.baseUrl.trim()
+                preferences[webSearchKey] = value.webSearch
+                preferences[noStorageKey] = value.noDataStorage
+                preferences[fallbacksKey] = value.fallbacks.trim()
+                val key = modelKeyFor(value.provider)
+                if (model.isBlank()) preferences.remove(key) else preferences[key] = model.trim()
             }
         }
 
