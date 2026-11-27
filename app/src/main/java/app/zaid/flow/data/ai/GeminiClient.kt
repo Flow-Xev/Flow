@@ -88,6 +88,19 @@ class GeminiClient
             }
         }
 
+        /**
+         * Always calls Google's Gemini API, whatever provider the assistant is set to. For features that run on
+         * a Gemini key of their own (the chapter Inspector): that key must never be sent to another provider.
+         */
+        suspend fun generateWithGemini(
+            apiKey: String,
+            model: String,
+            systemInstruction: String,
+            contents: JsonArray,
+            temperature: Double = DEFAULT_TEMPERATURE,
+            jsonOutput: Boolean = false,
+        ): GeminiTurn = generateGemini(apiKey, model, systemInstruction, contents, JsonArray(emptyList()), temperature, jsonOutput)
+
         private suspend fun generateGemini(
             apiKey: String,
             model: String,

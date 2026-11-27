@@ -1,6 +1,7 @@
 package app.zaid.flow.ai
 
 import android.util.Log
+import app.zaid.flow.data.ai.AiProvider
 import app.zaid.flow.data.ai.GeminiClient
 import app.zaid.flow.data.ai.GeminiSettingsStore
 import kotlinx.coroutines.CancellationException
@@ -32,9 +33,9 @@ private val INSPECTOR_PROMPT =
 
 /**
  * A second pair of eyes for AI chapters. It runs on its own Gemini key (set in Settings, normally from
- * another Google account), reads the same numbered transcript the first model saw and returns improved
- * chapters. It never makes things worse: an unusable, much shorter or failed review leaves the original
- * chapters as they were.
+ * another Google account) and always talks to Google's Gemini API, whichever provider the assistant uses.
+ * It reads the same numbered transcript the first model saw and returns improved chapters. It never makes
+ * things worse: an unusable, much shorter or failed review leaves the original chapters as they were.
  */
 @Singleton
 class AiChapterInspector
@@ -59,13 +60,13 @@ class AiChapterInspector
                 val prompt =
                     "Video length: $durationSeconds seconds. Keep between ${allowed.first} and ${allowed.last} chapters.\n\n" +
                         "Draft chapters:\n${draftJson(draft, lines)}\n\nTranscript:\n${promptTranscript(lines)}"
+                // The Inspector key is a Gemini key: it goes to Google's API directly, never to the assistant's provider.
                 val turn =
-                    client.generate(
+                    client.generateWithGemini(
                         apiKey = apiKey,
-                        model = settings.currentModel(),
+                        model = inspectorModel(settings.currentConfig().provider, settings.currentModel()),
                         systemInstruction = INSPECTOR_PROMPT,
                         contents = JsonArray(listOf(GeminiClient.userContent(prompt))),
-                        functionDeclarations = JsonArray(emptyList()),
                         temperature = INSPECTOR_TEMPERATURE,
                         jsonOutput = true,
                     )
@@ -84,6 +85,21 @@ class AiChapterInspector
             const val MIN_DRAFT = 3
         }
     }
+
+/**
+ * The Gemini model the Inspector asks. With Gemini as the provider it is the assistant's own model; with another
+ * provider a Gemini model id there ("google/gemini-2.5-flash:free") is mapped to its Gemini API name, and anything
+ * else falls back to the default Gemini model.
+ */
+internal fun inspectorModel(
+    provider: AiProvider,
+    model: String,
+): String {
+    val trimmed = model.trim()
+    if (provider == AiProvider.GEMINI) return trimmed.ifBlank { GeminiSettingsStore.DEFAULT_MODEL }
+    val bare = trimmed.removePrefix("google/").substringBefore(':')
+    return if (bare.startsWith("gemini-")) bare else GeminiSettingsStore.DEFAULT_MODEL
+}
 
 /** The draft as the model reads it: each chapter on the transcript line it begins at. */
 internal fun draftJson(
