@@ -1,6 +1,7 @@
 package app.zaid.flow.ui.screens.settings.integrations
 
 import androidx.compose.runtime.Immutable
+import app.zaid.flow.data.ai.AiProviderConfig
 import app.zaid.flow.data.ai.GeminiSettingsStore
 import app.zaid.flow.ai.FlowAiController
 import app.zaid.flow.data.local.PlayerPreferences
@@ -48,6 +49,7 @@ class IntegrationsViewModel
         val aiLocalMusicAccess = gemini.localMusicAccessEnabled.asState(false)
         val geminiKey = gemini.apiKey.asState("")
         val geminiModel = gemini.model.asState(GeminiSettingsStore.DEFAULT_MODEL)
+        val aiProvider = gemini.config.asState(AiProviderConfig())
         val aiInspector = gemini.inspectorEnabled.asState(false)
         val inspectorKey = gemini.inspectorApiKey.asState("")
         val giphyKey = GifSettings.userKey(appContext).asState("")
@@ -118,6 +120,12 @@ class IntegrationsViewModel
         fun setGiphyKey(value: String) = write { GifSettings.setUserKey(appContext, value) }
 
         fun setGeminiModel(value: String) = write { gemini.setModel(value) }
+
+        /** Saves the provider, its options and the model for that provider together. */
+        fun setAiProvider(
+            config: AiProviderConfig,
+            model: String,
+        ) = write { gemini.setProvider(config, model) }
 
         fun setAiInspector(value: Boolean) = write { gemini.setInspectorEnabled(value) }
 

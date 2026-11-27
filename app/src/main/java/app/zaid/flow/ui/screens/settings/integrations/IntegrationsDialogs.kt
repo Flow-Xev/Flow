@@ -12,6 +12,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -19,6 +21,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -37,6 +40,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import app.zaid.flow.R
+import app.zaid.flow.data.ai.AiProvider
+import app.zaid.flow.data.ai.AiProviderConfig
 import app.zaid.flow.ui.components.shared.FlowAlertDialog
 import app.zaid.flow.ui.theme.SponsorBlockSegmentPresets
 import app.zaid.flow.utils.sponsorCategoryLabelRes
@@ -66,7 +71,7 @@ internal fun IntegrationsDialogs(
             var input by rememberSaveable { mutableStateOf("") }
             FlowAlertDialog(
                 onDismissRequest = onDismiss,
-                title = { Text(stringResource(R.string.flow_ai_key_title)) },
+                title = { Text("${viewModel.aiProvider.collectAsState().value.provider.label} API key") },
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(PresetSpacing)) {
                         Text(stringResource(R.string.flow_ai_key_dialog_body), style = MaterialTheme.typography.bodyMedium)
@@ -225,26 +230,81 @@ internal fun IntegrationsDialogs(
         }
 
         IntegrationsDialog.GEMINI_MODEL -> {
+            val saved by viewModel.aiProvider.collectAsState()
+            var provider by rememberSaveable { mutableStateOf(saved.provider) }
+            var baseUrl by rememberSaveable { mutableStateOf(saved.baseUrl) }
+            var web by rememberSaveable { mutableStateOf(saved.webSearch) }
+            var noStore by rememberSaveable { mutableStateOf(saved.noDataStorage) }
+            var fallbacks by rememberSaveable { mutableStateOf(saved.fallbacks) }
             var input by rememberSaveable { mutableStateOf(geminiModel) }
             FlowAlertDialog(
                 onDismissRequest = onDismiss,
-                title = { Text(stringResource(R.string.flow_ai_model_title)) },
+                title = { Text("AI provider & model") },
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(PresetSpacing)) {
-                        Text(stringResource(R.string.flow_ai_model_dialog_body), style = MaterialTheme.typography.bodyMedium)
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(PresetSpacing)) {
+                            AiProvider.entries.forEach { p ->
+                                FilterChip(
+                                    selected = provider == p,
+                                    onClick = {
+                                        if (provider != p) {
+                                            provider = p
+                                            // Each provider keeps its own model; start from its default.
+                                            input = if (p == saved.provider) geminiModel else p.defaultModel
+                                        }
+                                    },
+                                    label = { Text(p.label) },
+                                )
+                            }
+                        }
+                        if (provider == AiProvider.CUSTOM) {
+                            Text("Any OpenAI-compatible server. Use the root URL, e.g. https://host/v1", style = MaterialTheme.typography.bodySmall)
+                            OutlinedTextField(
+                                value = baseUrl,
+                                onValueChange = { baseUrl = it },
+                                label = { Text("Base URL") },
+                                singleLine = true,
+                            )
+                        }
                         OutlinedTextField(
                             value = input,
                             onValueChange = { input = it },
                             label = { Text(stringResource(R.string.flow_ai_model_hint)) },
                             singleLine = true,
                         )
+                        if (provider == AiProvider.OPENROUTER) {
+                            OutlinedTextField(
+                                value = fallbacks,
+                                onValueChange = { fallbacks = it },
+                                label = { Text("Fallback models (comma separated)") },
+                                singleLine = true,
+                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("Web search (:online)", Modifier.weight(1f))
+                                Switch(checked = web, onCheckedChange = { web = it })
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("Only providers that don't store my data", Modifier.weight(1f))
+                                Switch(checked = noStore, onCheckedChange = { noStore = it })
+                            }
+                            Text(
+                                "Tools, prompt caching and long-context compression are always on.",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        if (provider != saved.provider) {
+                            Text("Each provider has its own API key; set it from the key row after saving.", style = MaterialTheme.typography.bodySmall)
+                        }
                     }
                 },
                 confirmButton = {
-                    TextButton(onClick = {
-                        viewModel.setGeminiModel(input)
-                        onDismiss()
-                    }) { Text(stringResource(R.string.btn_save)) }
+                    TextButton(
+                        enabled = provider != AiProvider.CUSTOM || baseUrl.isNotBlank(),
+                        onClick = {
+                            viewModel.setAiProvider(AiProviderConfig(provider, baseUrl, web, noStore, fallbacks), input)
+                            onDismiss()
+                        },
+                    ) { Text(stringResource(R.string.btn_save)) }
                 },
                 dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.btn_cancel)) } },
             )
