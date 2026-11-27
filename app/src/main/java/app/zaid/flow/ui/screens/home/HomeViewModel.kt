@@ -100,6 +100,9 @@ class HomeViewModel
             private const val ACCOUNT_HOME_ATTEMPTS = 5
             private const val USER_REFRESH_DEBOUNCE_MS = 600L
             private const val MIN_FRESH_ON_REFRESH = 6
+
+            /** True once this process has made a Home request; see fetchAccountHome. */
+            @Volatile private var sessionWarmedUp = false
             private const val HOME_POSTS_FALLBACK_DELAY_MS = 2_500L
             private const val HOME_POSTS_FALLBACK_CHANNELS = 8
 
@@ -1134,8 +1137,16 @@ class HomeViewModel
             // Only a page YouTube confirmed as the signed-in account's is used: an unflagged page can be the
             // anonymous trending feed. The sources run in a fixed order, WEB, then MWEB, then the hidden
             // WebView (see AccountFeedRepository.firstHomePage).
-            val fresh = userRefreshPending
+            // The first Home request after the app starts can come back only half-personalised; the same
+            // request answered normally once the session has been used. So the first one of the process is a
+            // warm-up whose page is discarded, and the one that is shown follows it as a fresh load.
+            var fresh = userRefreshPending
             userRefreshPending = false
+            if (!sessionWarmedUp) {
+                sessionWarmedUp = true
+                runCatching { accountFeed.firstHomePage(includeWebView = false) }
+                fresh = true
+            }
             accountFeed.firstHomePage(fresh = fresh)?.let { absorbPosts(it); return it }
             // Right after launch the network or session can still be coming up: retry the cheap InnerTube
             // sources (WEB, then MWEB) without paying for another WebView load.
