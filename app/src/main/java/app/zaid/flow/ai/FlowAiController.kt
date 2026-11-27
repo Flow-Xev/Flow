@@ -493,6 +493,7 @@ class FlowAiController
                             },
                             JsonArray(history),
                             tools.declarations,
+                            allowWebSearch = !conv.quiz,
                         )
                     history += turn.content
                     if (turn.calls.isEmpty()) {

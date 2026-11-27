@@ -44,9 +44,10 @@ enum class AiProvider(
 }
 
 /**
- * The chosen provider plus its options. [baseUrl] only matters for [AiProvider.CUSTOM]; the rest are
- * OpenRouter-only: [webSearch] (online models), [noDataStorage] (only providers that do not store or
- * train on prompts) and [fallbacks] (comma-separated model ids tried when the main model fails).
+ * The chosen provider plus its options. [baseUrl] only matters for [AiProvider.CUSTOM]. [webSearch] lets chat
+ * answers use the web: OpenRouter's web plugin, or Google Search grounding on Gemini (Gemini 3 and newer when
+ * the assistant's tools are in use). [noDataStorage] (only providers that do not store or train on prompts) and
+ * [fallbacks] (comma-separated model ids tried when the main model fails) are OpenRouter-only.
  */
 data class AiProviderConfig(
     val provider: AiProvider = AiProvider.GEMINI,

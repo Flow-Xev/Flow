@@ -290,17 +290,31 @@ internal fun IntegrationsDialogs(
                                 singleLine = true,
                             )
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("Web search (:online)", Modifier.weight(1f))
-                                Switch(checked = web, onCheckedChange = { web = it })
-                            }
-                            Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text("Only providers that don't store my data", Modifier.weight(1f))
                                 Switch(checked = noStore, onCheckedChange = { noStore = it })
                             }
                             Text(
-                                "Tools, prompt caching and long-context compression are always on.",
+                                "Tool calling and long-context compression are always on; prompt caching applies to Anthropic models.",
                                 style = MaterialTheme.typography.bodySmall,
                             )
+                        }
+                        if (provider == AiProvider.OPENROUTER || provider == AiProvider.GEMINI) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(stringResource(R.string.flow_ai_web_search_title))
+                                    Text(
+                                        stringResource(
+                                            if (provider == AiProvider.GEMINI) {
+                                                R.string.flow_ai_web_search_gemini
+                                            } else {
+                                                R.string.flow_ai_web_search_openrouter
+                                            },
+                                        ),
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                                Switch(checked = web, onCheckedChange = { web = it })
+                            }
                         }
                         if (provider != saved.provider) {
                             Text("Each provider has its own API key; set it from the key row after saving.", style = MaterialTheme.typography.bodySmall)

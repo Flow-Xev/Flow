@@ -79,12 +79,15 @@ class GeminiClient
             functionDeclarations: JsonArray,
             temperature: Double = DEFAULT_TEMPERATURE,
             jsonOutput: Boolean = false,
+            allowWebSearch: Boolean = false,
         ): GeminiTurn {
             val config = settings.currentConfig()
+            // Web search only for chat turns that ask for it, and only when the user switched it on.
+            val webSearch = allowWebSearch && config.webSearch && !jsonOutput
             return if (config.provider == AiProvider.GEMINI) {
-                generateGemini(apiKey, model, systemInstruction, contents, functionDeclarations, temperature, jsonOutput)
+                generateGemini(apiKey, model, systemInstruction, contents, functionDeclarations, temperature, jsonOutput, webSearch)
             } else {
-                generateOpenAi(config, apiKey, model, systemInstruction, contents, functionDeclarations, temperature, jsonOutput)
+                generateOpenAi(config, apiKey, model, systemInstruction, contents, functionDeclarations, temperature, jsonOutput, webSearch)
             }
         }
 
@@ -99,7 +102,8 @@ class GeminiClient
             contents: JsonArray,
             temperature: Double = DEFAULT_TEMPERATURE,
             jsonOutput: Boolean = false,
-        ): GeminiTurn = generateGemini(apiKey, model, systemInstruction, contents, JsonArray(emptyList()), temperature, jsonOutput)
+        ): GeminiTurn =
+            generateGemini(apiKey, model, systemInstruction, contents, JsonArray(emptyList()), temperature, jsonOutput, webSearch = false)
 
         private suspend fun generateGemini(
             apiKey: String,
@@ -109,46 +113,156 @@ class GeminiClient
             functionDeclarations: JsonArray,
             temperature: Double,
             jsonOutput: Boolean,
+            webSearch: Boolean,
         ): GeminiTurn =
             withContext(Dispatchers.IO) {
-                val body =
-                    buildJsonObject {
-                        putJsonObject("systemInstruction") {
-                            putJsonArray("parts") { add(buildJsonObject { put("text", systemInstruction) }) }
-                        }
-                        put("contents", contents)
-                        if (functionDeclarations.isNotEmpty()) {
-                            putJsonArray("tools") {
+                val modelId = model.trim()
+                val search = webSearch && canGroundWithSearch(modelId, functionDeclarations)
+                try {
+                    requestGemini(apiKey, modelId, systemInstruction, contents, functionDeclarations, temperature, jsonOutput, search)
+                } catch (e: GeminiException) {
+                    // Search with function calling is a preview feature: a model that refuses it answers without.
+                    if (search && e.httpCode == 400) {
+                        searchUnsupported += modelId
+                        requestGemini(apiKey, modelId, systemInstruction, contents, functionDeclarations, temperature, jsonOutput, false)
+                    } else {
+                        throw e
+                    }
+                }
+            }
+
+        /**
+         * Google Search grounding runs alone on any current Gemini model, but next to function declarations only
+         * on Gemini 3 and newer (tool combination); older models keep function calling and go without search.
+         */
+        private fun canGroundWithSearch(
+            model: String,
+            functionDeclarations: JsonArray,
+        ): Boolean {
+            if (model in searchUnsupported) return false
+            if (functionDeclarations.isEmpty()) return true
+            val version = Regex("""gemini-(\d+)""").find(model)?.groupValues?.get(1)?.toIntOrNull() ?: return false
+            return version >= 3
+        }
+
+        private val searchUnsupported: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+        private fun requestGemini(
+            apiKey: String,
+            model: String,
+            systemInstruction: String,
+            contents: JsonArray,
+            functionDeclarations: JsonArray,
+            temperature: Double,
+            jsonOutput: Boolean,
+            search: Boolean,
+        ): GeminiTurn {
+            val combine = search && functionDeclarations.isNotEmpty()
+            val history = if (combine) withFunctionResponseIds(contents) else withoutServerToolParts(contents)
+            val body =
+                buildJsonObject {
+                    putJsonObject("systemInstruction") {
+                        putJsonArray("parts") { add(buildJsonObject { put("text", systemInstruction) }) }
+                    }
+                    put("contents", history)
+                    if (functionDeclarations.isNotEmpty() || search) {
+                        putJsonArray("tools") {
+                            if (functionDeclarations.isNotEmpty()) {
                                 add(buildJsonObject { put("functionDeclarations", functionDeclarations) })
                             }
-                        }
-                        putJsonObject("generationConfig") {
-                            put("temperature", temperature)
-                            // Valid only without function declarations; the caller asks for it on plain answers.
-                            if (jsonOutput && functionDeclarations.isEmpty()) put("responseMimeType", "application/json")
+                            if (search) add(buildJsonObject { putJsonObject("googleSearch") {} })
                         }
                     }
-                val request =
-                    Request
-                        .Builder()
-                        .url("$ENDPOINT/${model.trim()}:generateContent")
-                        .header("x-goog-api-key", apiKey)
-                        .post(body.toString().toRequestBody(JSON_MEDIA_TYPE))
-                        .build()
-                val raw =
-                    try {
-                        client.newCall(request).execute().use { response ->
-                            val text = response.body?.string().orEmpty()
-                            if (!response.isSuccessful) throw GeminiException(errorMessage(text, response.code), response.code)
-                            text
-                        }
-                    } catch (e: GeminiException) {
-                        throw e
-                    } catch (e: IOException) {
-                        throw GeminiException(e.message ?: "Network error", 0)
+                    // Needed for built-in tools next to function calls: the model then returns its search steps
+                    // as toolCall/toolResponse parts, which go back to it untouched in the next turn.
+                    if (combine) putJsonObject("toolConfig") { put("includeServerSideToolInvocations", true) }
+                    putJsonObject("generationConfig") {
+                        put("temperature", temperature)
+                        // Valid only without tools; the caller asks for it on plain answers.
+                        if (jsonOutput && functionDeclarations.isEmpty() && !search) put("responseMimeType", "application/json")
                     }
-                parse(raw)
-            }
+                }
+            val request =
+                Request
+                    .Builder()
+                    .url("$ENDPOINT/$model:generateContent")
+                    .header("x-goog-api-key", apiKey)
+                    .post(body.toString().toRequestBody(JSON_MEDIA_TYPE))
+                    .build()
+            val raw =
+                try {
+                    client.newCall(request).execute().use { response ->
+                        val text = response.body?.string().orEmpty()
+                        if (!response.isSuccessful) throw GeminiException(errorMessage(text, response.code), response.code)
+                        text
+                    }
+                } catch (e: GeminiException) {
+                    throw e
+                } catch (e: IOException) {
+                    throw GeminiException("Gemini could not be reached: ${e.message ?: "network error"}", 0)
+                }
+            return parse(raw)
+        }
+
+        /**
+         * With tool combination every functionResponse must carry the id of the functionCall it answers. The app
+         * stores answers by name and order, so the ids are copied over from the model turn just before them.
+         */
+        private fun withFunctionResponseIds(contents: JsonArray): JsonArray {
+            var callIds = ArrayDeque<String?>()
+            return JsonArray(
+                contents.map { element ->
+                    val content = element as? JsonObject ?: return@map element
+                    val parts = (content["parts"] as? JsonArray).orEmpty()
+                    if ((content["role"] as? JsonPrimitive)?.contentOrNull == "model") {
+                        callIds =
+                            ArrayDeque(
+                                parts.mapNotNull { part ->
+                                    val call = (part as? JsonObject)?.get("functionCall") as? JsonObject ?: return@mapNotNull null
+                                    (call["id"] as? JsonPrimitive)?.contentOrNull
+                                },
+                            )
+                        return@map content
+                    }
+                    if (parts.none { (it as? JsonObject)?.containsKey("functionResponse") == true }) return@map content
+                    val patched =
+                        parts.map { part ->
+                            val obj = part as? JsonObject ?: return@map part
+                            val answer = obj["functionResponse"] as? JsonObject ?: return@map part
+                            val id = callIds.removeFirstOrNull()
+                            if (id == null || answer.containsKey("id")) {
+                                part
+                            } else {
+                                JsonObject(obj + ("functionResponse" to JsonObject(answer + ("id" to JsonPrimitive(id)))))
+                            }
+                        }
+                    JsonObject(content + ("parts" to JsonArray(patched)))
+                },
+            )
+        }
+
+        /** Search steps from an earlier grounded turn are only valid while search is on; without it they are dropped. */
+        private fun withoutServerToolParts(contents: JsonArray): JsonArray {
+            val hasServerParts =
+                contents.any { element ->
+                    ((element as? JsonObject)?.get("parts") as? JsonArray).orEmpty().any { part ->
+                        (part as? JsonObject)?.let { it.containsKey("toolCall") || it.containsKey("toolResponse") } == true
+                    }
+                }
+            if (!hasServerParts) return contents
+            return JsonArray(
+                contents.map { element ->
+                    val content = element as? JsonObject ?: return@map element
+                    val parts = (content["parts"] as? JsonArray) ?: return@map content
+                    val kept =
+                        parts.filterNot { part ->
+                            (part as? JsonObject)?.let { it.containsKey("toolCall") || it.containsKey("toolResponse") } == true
+                        }
+                    val safe = kept.ifEmpty { listOf(buildJsonObject { put("text", "") }) }
+                    JsonObject(content + ("parts" to JsonArray(safe)))
+                },
+            )
+        }
 
         // ── OpenAI-compatible providers (OpenRouter, OpenAI, Groq, DeepSeek, custom) ─────────────
         // The app keeps one history format (Gemini's). It is translated to chat-completions messages
@@ -163,6 +277,7 @@ class GeminiClient
             functionDeclarations: JsonArray,
             temperature: Double,
             jsonOutput: Boolean,
+            webSearch: Boolean,
         ): GeminiTurn =
             withContext(Dispatchers.IO) {
                 val label = config.provider.label
@@ -173,11 +288,12 @@ class GeminiClient
                 // JSON mode is a hint, not a requirement: many models and providers reject response_format, so
                 // a request that fails because of it is sent once more without it and the reply is parsed leniently.
                 val wantJsonMode = jsonOutput && !hasTools && config.provider != AiProvider.CUSTOM
+                val web = webSearch && config.provider == AiProvider.OPENROUTER
                 try {
-                    requestOpenAi(config, apiKey, model, systemInstruction, contents, functionDeclarations, temperature, wantJsonMode)
+                    requestOpenAi(config, apiKey, model, systemInstruction, contents, functionDeclarations, temperature, wantJsonMode, web)
                 } catch (e: GeminiException) {
                     if (wantJsonMode && isUnsupportedParameter(e)) {
-                        requestOpenAi(config, apiKey, model, systemInstruction, contents, functionDeclarations, temperature, false)
+                        requestOpenAi(config, apiKey, model, systemInstruction, contents, functionDeclarations, temperature, false, web)
                     } else {
                         throw e
                     }
@@ -193,6 +309,7 @@ class GeminiClient
             functionDeclarations: JsonArray,
             temperature: Double,
             jsonMode: Boolean,
+            webSearch: Boolean,
         ): GeminiTurn {
             val label = config.provider.label
             val root = config.endpointRoot
@@ -237,6 +354,18 @@ class GeminiClient
                         }
                         // Long transcripts are compressed to fit the model's window instead of failing.
                         putJsonArray("transforms") { add(JsonPrimitive("middle-out")) }
+                        // OpenRouter's web plugin works with every model (native search where the model has it,
+                        // Exa otherwise) and, unlike a ":online" suffix, also applies to the fallback models.
+                        if (webSearch && !primary.endsWith(":online")) {
+                            putJsonArray("plugins") {
+                                add(
+                                    buildJsonObject {
+                                        put("id", "web")
+                                        put("max_results", WEB_RESULTS)
+                                    },
+                                )
+                            }
+                        }
                     }
                 }
             val request =
@@ -401,7 +530,13 @@ class GeminiClient
                         if (text.isEmpty() && calls.isEmpty()) add(buildJsonObject { put("text", "") })
                     }
                 }
-            return GeminiTurn(replay, text, calls)
+            val sources =
+                (message["annotations"] as? JsonArray).orEmpty().mapNotNull { element ->
+                    val citation = (element as? JsonObject)?.get("url_citation") as? JsonObject ?: return@mapNotNull null
+                    val url = (citation["url"] as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
+                    url to (citation["title"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+                }
+            return GeminiTurn(replay, withSources(text, sources), calls)
         }
 
         /** Message content is a string for most providers, but some send an array of typed parts. */
@@ -475,12 +610,46 @@ class GeminiClient
                         put("parts", JsonArray(parts))
                     }
                 }
-            return GeminiTurn(replay, text.trim(), calls)
+            val sources =
+                ((candidate?.get("groundingMetadata") as? JsonObject)?.get("groundingChunks") as? JsonArray)
+                    .orEmpty()
+                    .mapNotNull { chunk ->
+                        val web = (chunk as? JsonObject)?.get("web") as? JsonObject ?: return@mapNotNull null
+                        val uri = (web["uri"] as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
+                        uri to (web["title"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+                    }
+            return GeminiTurn(replay, withSources(text.trim(), sources), calls)
+        }
+
+        /**
+         * Adds the web pages a grounded answer used as a short markdown "Sources" list, skipping any the answer
+         * already links. Only shown to the user; the model's own history keeps the answer as it gave it.
+         */
+        private fun withSources(
+            text: String,
+            sources: List<Pair<String, String>>,
+        ): String {
+            if (text.isBlank()) return text
+            val fresh =
+                sources
+                    .filter { (url, _) -> url.startsWith("http") && url !in text }
+                    .distinctBy { it.first }
+                    .take(WEB_RESULTS)
+            if (fresh.isEmpty()) return text
+            return buildString {
+                append(text.trimEnd())
+                append("\n\nSources:")
+                fresh.forEach { (url, title) ->
+                    val name = title.ifBlank { url.substringAfter("://").substringBefore('/') }.replace("[", "").replace("]", "")
+                    append("\n- [").append(name).append("](").append(url).append(')')
+                }
+            }
         }
 
         companion object {
             private const val ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models"
             private const val TIMEOUT_SECONDS = 90L
+            private const val WEB_RESULTS = 5
             const val DEFAULT_TEMPERATURE = 0.5
             private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 

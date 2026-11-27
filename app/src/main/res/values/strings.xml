@@ -4542,6 +4542,9 @@
     <string name="flow_ai_model_summary">The model Flow AI talks to</string>
     <string name="flow_ai_model_dialog_body">Any %1$s model that supports tool (function) calling, for example %2$s.</string>
     <string name="flow_ai_model_hint">Model name</string>
+    <string name="flow_ai_web_search_title">Web search</string>
+    <string name="flow_ai_web_search_openrouter">Lets answers use fresh web results and cite them, through OpenRouter\'s web plugin. Each search costs a little extra.</string>
+    <string name="flow_ai_web_search_gemini">Lets answers use Google Search and cite sources. Works alongside Flow\'s tools on Gemini 3 and newer models; older models answer without it.</string>
     <string name="flow_ai_pill_summarise">✨ Summarise this video</string>
     <string name="flow_ai_pill_key_points">🎯 Key points</string>
     <string name="flow_ai_pill_chapters">📑 Create chapters</string>
