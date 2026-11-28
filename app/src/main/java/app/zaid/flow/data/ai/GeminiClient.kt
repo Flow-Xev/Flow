@@ -333,7 +333,22 @@ class GeminiClient
                                 add(
                                     buildJsonObject {
                                         put("type", "function")
-                                        put("function", decl)
+                                        // Strict OpenAI-style APIs (Mistral) answer 422 when a function has no parameters object.
+                                        put(
+                                            "function",
+                                            if (decl.containsKey("parameters")) {
+                                                decl
+                                            } else {
+                                                JsonObject(
+                                                    decl +
+                                                        ("parameters" to
+                                                            buildJsonObject {
+                                                                put("type", "object")
+                                                                putJsonObject("properties") {}
+                                                            }),
+                                                )
+                                            },
+                                        )
                                     },
                                 )
                             }
@@ -448,7 +463,8 @@ class GeminiClient
                                 if (calls.isNotEmpty()) {
                                     putJsonArray("tool_calls") {
                                         calls.forEachIndexed { i, call ->
-                                            val id = "call_${index}_$i"
+                                            // Mistral only accepts tool call ids of exactly 9 letters or digits.
+                                            val id = "c%04d%04d".format(index, i)
                                             pendingIds.addLast(id)
                                             add(
                                                 buildJsonObject {
@@ -471,7 +487,7 @@ class GeminiClient
                             add(
                                 buildJsonObject {
                                     put("role", "tool")
-                                    put("tool_call_id", pendingIds.removeFirstOrNull() ?: "call_${index}_x")
+                                    put("tool_call_id", pendingIds.removeFirstOrNull() ?: "c%04d9999".format(index))
                                     put("content", (r["response"] ?: JsonObject(emptyMap())).toString())
                                 },
                             )
