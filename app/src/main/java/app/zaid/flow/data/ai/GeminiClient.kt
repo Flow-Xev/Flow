@@ -336,11 +336,11 @@ class GeminiClient
                                         // Strict OpenAI-style APIs (Mistral) answer 422 when a function has no parameters object.
                                         put(
                                             "function",
-                                            if (decl.containsKey("parameters")) {
+                                            if (decl.jsonObject.containsKey("parameters")) {
                                                 decl
                                             } else {
                                                 JsonObject(
-                                                    decl +
+                                                    decl.jsonObject +
                                                         ("parameters" to
                                                             buildJsonObject {
                                                                 put("type", "object")
